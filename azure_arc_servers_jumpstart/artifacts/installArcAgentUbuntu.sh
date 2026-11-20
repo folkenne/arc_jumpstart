@@ -1,0 +1,27 @@
+#!/bin/sh
+set -eu
+
+# Read the short-lived token on stdin. The staged script never contains a token.
+IFS= read -r accessToken
+test -n "$accessToken"
+test "$#" -eq 4
+resourceGroup=$1
+spnTenantId=$2
+Azurelocation=$3
+subscriptionId=$4
+
+# Block Azure IMDS
+sudo ufw --force enable
+sudo ufw deny out from any to 169.254.169.254
+sudo ufw default allow incoming
+
+# Download the installation package
+wget https://aka.ms/azcmagent -O ~/install_linux_azcmagent.sh # 2>/dev/null
+
+# Install the hybrid agent
+bash ~/install_linux_azcmagent.sh # 2>/dev/null
+
+ArcServerResourceName=$(hostname |sed -e "s/\b\(.\)/\u\1/g")
+
+# Run connect command
+azcmagent connect --access-token "$accessToken" --resource-group "$resourceGroup" --tenant-id "$spnTenantId" --location "$Azurelocation" --subscription-id "$subscriptionId" --resource-name "$ArcServerResourceName" --cloud "AzureCloud" --tags "Project=jumpstart_arcbox" --correlation-id "d009f5dd-dba8-4ac7-bac9-b54ef3a6671a"

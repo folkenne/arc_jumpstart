@@ -1,0 +1,5 @@
+Provisioning logs are stored locally under C:\ArcBox\Logs.
+
+Keep the raw logs and any generated ZIP bundle private. For support review,
+redact credentials, tokens, signed URLs, and environment identifiers from
+the relevant excerpts. Share them only through an approved private channel.
