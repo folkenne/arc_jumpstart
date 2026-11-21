@@ -97,7 +97,9 @@ $stage = 'artifacts'
 $fallback = 'artifact-pin'
 $options = ConvertFrom-Json -InputObject ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($bootstrapOptionsBase64)))
 Assert-ArcBoxSuccessorOptions $options
-$null = Get-ArcBoxNestedCredentialUri $options.nestedWindowsCredentialUri
+if ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value -ne 'S-1-5-18') {
+    Stop-ArcBoxHostStep task-dispatch 'Expected SYSTEM Bootstrap.'
+}
 if (($options.PSObject.Properties['performance'] -and $options.performance -isnot [bool]) -or
     ($options.PSObject.Properties['runId'] -and $options.runId -cnotmatch '\A[a-f0-9]{32}\z') -or
     ($options.performance -and -not $options.runId)) {
@@ -127,7 +129,6 @@ Receive-ArcBoxPinnedScript $templateBaseUrl 'testDefenderForSQL.ps1' (Join-Path 
 Receive-ArcBoxPinnedScript $templateBaseUrl 'SqlAdvancedThreatProtectionShell.psm1' (Join-Path $Env:ArcBoxDir 'SqlAdvancedThreatProtectionShell.psm1')
 [IO.File]::WriteAllText((Join-Path $work 'Inputs.json'), ([ordered]@{
     disk = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($dataDiskIdBase64))
-    nestedWindowsCredentialUri = $options.nestedWindowsCredentialUri
     machinePackages = $options.machinePackages
 } | ConvertTo-Json -Depth 6 -Compress))
 $stage = 'disk'

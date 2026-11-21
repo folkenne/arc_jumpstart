@@ -16,8 +16,7 @@ $script:ArcBoxHostReasons = @{
     'artifact-pin' = 'Check the successor artifact source, output filename and bootstrap inputs.'
     'private-config' = 'Check the protected local provisioning directory and attempt ID.'
     'private-hash' = 'Compare the staged artifact with the approved SHA-256 before retrying.'
-    'nested-credential-config' = 'Supply the approved versioned Key Vault reference for the nested Windows login.'
-    'nested-credential-read' = 'Check the private vault route, secret version and the client identity secret access.'
+    'nested-credential-read' = 'Check the immutable Level Up artifact source and the expected legacy lab credential schema.'
     'performance' = 'Check the local sampler task; guest setup does not depend on it.'
     'module-setup' = 'Inspect local PowerShell Gallery and module import errors.'
     'windows-features' = 'Inspect Windows feature installation and servicing state.'
@@ -107,9 +106,10 @@ function Read-ArcBoxMetadataJson {
 
 function Assert-ArcBoxSuccessorOptions {
     param([pscustomobject]$Options)
-    if ($null -eq $Options -or $Options.PSObject.Properties['privateArcServers'] -or
-        $Options.PSObject.Properties['privateSqlHelper']) {
-        Stop-ArcBoxHostStep artifact-pin 'Expected successor bootstrap options without Blob script overrides.'
+    if ($null -eq $Options -or @($Options.PSObject.Properties | Where-Object {
+            $_.Name -cnotin 'machinePackages','performance','runId'
+        }).Count) {
+        Stop-ArcBoxHostStep artifact-pin 'Unexpected bootstrap option; use only the reviewed machine-package and run settings.'
     }
 }
 
@@ -132,31 +132,6 @@ function Get-ArcBoxScriptPins {
             Uri = "${upstream}SqlAdvancedThreatProtectionShell.psm1"
             Sha256 = 'ebf51226fee00a15c27f3b77f90058f6e9684bc515a783dcb7321a38308b9237'
         }
-    }
-}
-
-function Get-ArcBoxNestedCredentialUri {
-    param([string]$SecretUri)
-    if ($SecretUri -cnotmatch '\Ahttps://[a-z][a-z0-9-]{1,22}[a-z0-9]\.vault\.azure\.net/secrets/arcbox-nested-windows/[a-f0-9]{32}\z') {
-        Stop-ArcBoxHostStep nested-credential-config 'Expected the reviewed version of the nested Windows secret.'
-    }
-    [uri]$SecretUri
-}
-
-function Get-ArcBoxNestedCredential {
-    param([string]$SecretUri)
-    $uri = Get-ArcBoxNestedCredentialUri $SecretUri
-    try {
-        $identity = Read-ArcBoxMetadataJson '/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fvault.azure.net'
-        if ([string]::IsNullOrWhiteSpace($identity.access_token)) { throw 'No vault access token.' }
-        $secret = Invoke-RestMethod -Uri "$($uri.AbsoluteUri)?api-version=7.4" -Method Get `
-            -Headers @{ Authorization = "Bearer $($identity.access_token)" } -MaximumRedirection 0 -TimeoutSec 30 -ErrorAction Stop
-        if ($secret.id -cne $uri.AbsoluteUri -or $secret.value -isnot [string] -or
-            [string]::IsNullOrWhiteSpace($secret.value)) { throw 'No matching credential version.' }
-        [pscredential]::new('Administrator', (ConvertTo-SecureString -String $secret.value -AsPlainText -Force))
-    } catch {
-        # Do not log the request, bearer token, response body or transport error payload.
-        Stop-ArcBoxHostStep nested-credential-read 'Could not load the approved nested Windows credential.'
     }
 }
 

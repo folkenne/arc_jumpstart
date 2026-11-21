@@ -46,7 +46,6 @@ try {
         Install-ArcBoxMachinePackages -Packages $inputFile.machinePackages -Work $work
     }
     Invoke-ArcBoxCheckpoint $work dsc-itpro dsc-config {
-        Install-ArcBoxMachinePackages -Packages $inputFile.machinePackages -Work $work -ItPro
         Set-ArcBoxHyperVHost
     }
     # Rehydrate the machine PATH even when the package checkpoints were already complete.
@@ -60,7 +59,12 @@ try {
         Assert-ArcBoxPrivateScript $privateScript $pins['ArcServersLogonScript.ps1'].Sha256
         Assert-ArcBoxPrivateScript $sqlHelper $pins['testDefenderForSQL.ps1'].Sha256
         Assert-ArcBoxPrivateScript $sqlModule $pins['SqlAdvancedThreatProtectionShell.psm1'].Sha256
-        $credential = Get-ArcBoxNestedCredential $inputFile.nestedWindowsCredentialUri
+        # Preserve the upstream WorkshopPLUS lab credential for nested PowerShell Direct.
+        $nestedWindowsUsername = "Administrator"
+        $nestedWindowsPassword = "JS123!!"
+        $credential = [pscredential]::new($nestedWindowsUsername,
+            (ConvertTo-SecureString -String $nestedWindowsPassword -AsPlainText -Force))
+        $nestedWindowsPassword = $null
         try {
             & $privateScript -SqlHelperPath $sqlHelper -SqlHelperSha256 $pins['testDefenderForSQL.ps1'].Sha256 -WindowsCredential $credential
         } finally {

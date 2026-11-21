@@ -4,17 +4,18 @@ $script:ArcBoxPackageSpecs = [ordered]@{
     'Microsoft.AzureCLI' = @('msi', 'ProgramFiles\Microsoft SDKs\Azure\CLI2\wbin\az.cmd')
     'Microsoft.Edge' = @('msi', 'ProgramFiles(x86)\Microsoft\Edge\Application\msedge.exe')
     'Microsoft.Azure.AZCopy.10' = @('zip', 'ProgramFiles\ArcBoxTools\azcopy.exe')
-    'Microsoft.DotNet.SDK.8' = @('exe', 'ProgramFiles\dotnet\sdk\8.*\dotnet.dll')
+    'Microsoft.DotNet.SDK.8' = @('exe', 'ProgramFiles\dotnet\sdk\8.0.428\dotnet.dll')
     'Microsoft.Sysinternals.BGInfo' = @('zip', 'ProgramFiles\ArcBoxTools\Bginfo64.exe')
-    'FireDaemon.OpenSSL' = @('msi', 'ProgramFiles\FireDaemon OpenSSL 3\bin\openssl.exe')
-    '7zip.7zip' = @('msi', 'ProgramFiles\7-Zip\7z.exe')
+    'FireDaemon.OpenSSL' = @('exe', 'ProgramFiles\FireDaemon OpenSSL 3.5\bin\openssl.exe')
 }
 
-# Keep the package IDs declared in common/ITPro DSC; use reviewed machine installers,
+# The engineering pilot requires the eight common packages; ITPro 7-Zip is omitted.
 # not App Installer's per-user alias or configuration engine on Server 2022.
 function Assert-ArcBoxMachinePackages {
     param($Packages)
-    if ($null -eq $Packages -or @($Packages.PSObject.Properties).Count -ne $script:ArcBoxPackageSpecs.Count) {
+    $names = @($Packages.PSObject.Properties.Name)
+    if ($null -eq $Packages -or $names.Count -ne $script:ArcBoxPackageSpecs.Count -or
+        @($names | Where-Object { $_ -cnotin $script:ArcBoxPackageSpecs.Keys }).Count) {
         Stop-ArcBoxHostStep winget-setup 'Supply the full reviewed machine installer set.'
     }
     foreach ($id in $script:ArcBoxPackageSpecs.Keys) {
@@ -28,32 +29,102 @@ function Assert-ArcBoxMachinePackages {
     }
 }
 
-function Test-ArcBoxInstalledTool {
+function Get-ArcBoxMatchedTool {
     param([string]$Path, [string]$Hash)
-    foreach ($file in Get-Item -Path $Path -ErrorAction SilentlyContinue) {
-        if (-not $file.PSIsContainer -and -not ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -and
-            (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256 -ErrorAction Stop).Hash -ieq $Hash) {
-            return $true
+    $file = Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue
+    if ($file -and -not $file.PSIsContainer -and -not ($file.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        $actual = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256 -ErrorAction Stop).Hash
+        if ($actual -ieq $Hash) {
+            return @{ path = $file.FullName; sha256 = $actual.ToLowerInvariant() }
         }
     }
-    $false
+}
+
+function Write-ArcBoxMachinePackageEvent {
+    param([string]$Id, [string]$Event, [hashtable]$Measured)
+    Write-Host ('ArcBoxMachinePackage ' + ([ordered]@{
+        utc = [DateTime]::UtcNow.ToString('o')
+        id = $Id
+        event = $Event
+        measured = $Measured
+    } | ConvertTo-Json -Compress))
+}
+
+function Get-ArcBoxReviewedAssetRedirect {
+    param([string]$Location, [string]$AssetPath)
+    if (-not $AssetPath -or $Location -cnotmatch ('\Ahttps://release-assets\.githubusercontent\.com' + [regex]::Escape($AssetPath) + '\?[^\s#\\]+\z')) {
+        throw 'Unexpected installer redirect destination.'
+    }
+    $target = [uri]$Location
+    if (-not $target.IsAbsoluteUri -or $target.Scheme -cne 'https' -or
+        $target.IdnHost -cne 'release-assets.githubusercontent.com' -or -not $target.IsDefaultPort -or $target.UserInfo -or $target.Fragment) {
+        throw 'Unexpected installer redirect destination.'
+    }
+    $target
+}
+
+function Save-ArcBoxMachineAsset {
+    param([string]$Id, [string]$Uri, [string]$Path)
+    $reviewed, $assetPath = switch -CaseSensitive ($Id) {
+        'Git.Git' {
+            'https://github.com/git-for-windows/git/releases/download/v2.56.1.windows.1/Git-2.56.1-64-bit.exe'
+            '/github-production-release-asset/23216272/5b3798ad-0b47-4c8d-9b26-e00bfc8b850e'
+        }
+        'Microsoft.Azure.AZCopy.10' {
+            'https://github.com/Azure/azure-storage-azcopy/releases/download/v10.34.2/azcopy_windows_amd64_10.34.2.zip'
+            '/github-production-release-asset/114798676/2dbcf361-0df2-4da1-a1bb-142005d0ed82'
+        }
+    }
+    if (-not $reviewed -or $Uri -cne $reviewed) {
+        Invoke-WebRequest -Uri $Uri -OutFile $Path -MaximumRedirection 0 -TimeoutSec 300 -ErrorAction Stop
+        return
+    }
+
+    Add-Type -AssemblyName System.Net.Http
+    $handler = [Net.Http.HttpClientHandler]::new()
+    $handler.AllowAutoRedirect = $false
+    $handler.UseCookies = $false
+    $handler.UseDefaultCredentials = $false
+    $client = [Net.Http.HttpClient]::new($handler)
+    $client.Timeout = [TimeSpan]::FromSeconds(300)
+    $client.MaxResponseContentBufferSize = 70MB
+    $response = $null
+    try {
+        $response = $client.GetAsync([uri]$Uri).GetAwaiter().GetResult()
+        if ([int]$response.StatusCode -eq 302) {
+            $target = Get-ArcBoxReviewedAssetRedirect ($response.Headers.Location.OriginalString) $assetPath
+            $response.Dispose()
+            $response = $null
+            $response = $client.GetAsync($target).GetAwaiter().GetResult()
+        }
+        if ([int]$response.StatusCode -ne 200) { throw 'Unexpected installer response status.' }
+        $file = [IO.File]::Open($Path, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $null = $response.Content.CopyToAsync($file).GetAwaiter().GetResult() } finally { $file.Dispose() }
+    } finally {
+        if ($response) { $response.Dispose() }
+        $client.Dispose()
+    }
 }
 
 function Install-ArcBoxMachinePackages {
-    param($Packages, [string]$Work, [switch]$ItPro)
+    param($Packages, [string]$Work)
     Assert-ArcBoxMachinePackages $Packages
     foreach ($id in $script:ArcBoxPackageSpecs.Keys) {
-        if (($id -eq '7zip.7zip') -ne $ItPro.IsPresent) { continue }
         $kind, $relative = $script:ArcBoxPackageSpecs[$id]
         $base, $leaf = $relative -split '\\', 2
         $expected = Join-Path ([Environment]::GetEnvironmentVariable($base)) $leaf
         $pin = $Packages.PSObject.Properties[$id].Value
-        if (Test-ArcBoxInstalledTool $expected $pin.installedSha256) { continue }
+        $installed = Get-ArcBoxMatchedTool $expected $pin.installedSha256
+        if ($installed) {
+            Write-ArcBoxMachinePackageEvent $id skipped-existing $installed
+            continue
+        }
         $asset = Join-Path $Work "$id.$kind"
         try {
-            Invoke-WebRequest -Uri $pin.uri -OutFile $asset -MaximumRedirection 0 -TimeoutSec 300 -ErrorAction Stop
+            Save-ArcBoxMachineAsset -Id $id -Uri $pin.uri -Path $asset
         } catch { Stop-ArcBoxHostStep winget-setup "Could not retrieve the reviewed installer for $id." }
-        if ((Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash -ine $pin.sha256) {
+        $assetHash = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($assetHash -cne $pin.sha256) {
             Stop-ArcBoxHostStep winget-setup "Installer digest mismatch for $id."
         }
         if ($kind -eq 'zip') {
@@ -61,33 +132,39 @@ function Install-ArcBoxMachinePackages {
             Expand-Archive -LiteralPath $asset -DestinationPath $expanded -Force
             $binary = @(Get-ChildItem -LiteralPath $expanded -Recurse -File -Filter (Split-Path -Leaf $expected))
             if ($binary.Count -ne 1 -or (Get-AuthenticodeSignature -FilePath $binary[0].FullName).Status -ne 'Valid' -or
-                -not (Test-ArcBoxInstalledTool $binary[0].FullName $pin.installedSha256)) {
+                -not (Get-ArcBoxMatchedTool $binary[0].FullName $pin.installedSha256)) {
                 Stop-ArcBoxHostStep winget-setup "The signed tool in $id did not match the reviewed installed digest."
             }
+            Write-ArcBoxMachinePackageEvent $id copy-start @{ assetSha256 = $assetHash }
             New-Item -ItemType Directory -Path (Split-Path -Parent $expected) -Force | Out-Null
             Copy-Item -LiteralPath $binary[0].FullName -Destination $expected
         } else {
             if ((Get-AuthenticodeSignature -FilePath $asset).Status -ne 'Valid') {
                 Stop-ArcBoxHostStep winget-setup "Installer signature invalid for $id."
             }
+            Write-ArcBoxMachinePackageEvent $id installer-start @{ assetSha256 = $assetHash }
             if ($kind -eq 'msi') {
                 $proc = Start-Process -FilePath "$env:SystemRoot\System32\msiexec.exe" -ArgumentList ('/i "{0}" /qn /norestart ALLUSERS=1' -f $asset) -Wait -PassThru
             } else {
                 $flags = switch ($id) {
                     'Git.Git' { '/VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP- /ALLUSERS' }
-                    'Microsoft.VisualStudioCode' { '/VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP- /ALLUSERS' }
+                    'Microsoft.VisualStudioCode' { '/VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP- /ALLUSERS /MERGETASKS=desktopicon,!runcode' }
                     'Microsoft.DotNet.SDK.8' { '/install /quiet /norestart' }
+                    'FireDaemon.OpenSSL' { '/exenoui /qn /norestart REBOOT=ReallySuppress ADJUSTSYSTEMPATHENV=yes' }
                 }
                 $proc = Start-Process -FilePath $asset -ArgumentList $flags -Wait -PassThru
             }
+            Write-ArcBoxMachinePackageEvent $id installer-exit @{ code = $proc.ExitCode }
             if ($proc.ExitCode -in 1641,3010) {
                 Stop-ArcBoxHostStep machine-reboot-required "Installer for $id requested or started a reboot; do not dispatch downstream work."
             }
             if ($proc.ExitCode -ne 0) { Stop-ArcBoxHostStep winget-setup "Installer for $id returned $($proc.ExitCode)." }
         }
-        if (-not (Test-ArcBoxInstalledTool $expected $pin.installedSha256)) {
+        $installed = Get-ArcBoxMatchedTool $expected $pin.installedSha256
+        if (-not $installed) {
             Stop-ArcBoxHostStep winget-setup "Installed machine tool for $id did not match the reviewed bytes."
         }
+        Write-ArcBoxMachinePackageEvent $id destination-verified $installed
         Remove-Item -LiteralPath $asset -Force
     }
     $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ";$env:ProgramFiles\ArcBoxTools"
