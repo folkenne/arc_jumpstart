@@ -68,6 +68,16 @@ try {
     }
     $env:Path = "$openSsh;" + [Environment]::GetEnvironmentVariable('Path', 'Machine') + ";$env:ProgramFiles\ArcBoxTools"
     Invoke-ArcBoxCheckpoint $work servers guest-access {
+        . (Join-Path $work 'ArcBox.Modules.ps1')
+        $moduleRoot = Join-Path $env:ProgramFiles 'PowerShell\Modules'
+        Set-ArcBoxProvisioningModulePath $moduleRoot
+        $moduleLock = Read-ArcBoxModuleLock (Join-Path $work 'ArcBox.Modules.lock.json')
+        foreach ($pin in Get-ArcBoxProvisioningPins $moduleLock) {
+            $manifest = Join-Path $moduleRoot "$($pin.name)\$($pin.version)\$($pin.name).psd1"
+            Invoke-ArcBoxOperation modules 'Import locked module' $pin.name {
+                Import-ArcBoxProvisioningModule $pin $manifest $moduleRoot
+            } -Version $pin.version -Repository 'Verified machine modules'
+        }
         Assert-ArcBoxPrivateScript $privateScript $pins['ArcServersLogonScript.ps1'].Sha256
         Assert-ArcBoxPrivateScript $sqlHelper $pins['testDefenderForSQL.ps1'].Sha256
         Assert-ArcBoxPrivateScript $sqlModule $pins['SqlAdvancedThreatProtectionShell.psm1'].Sha256

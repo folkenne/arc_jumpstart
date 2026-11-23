@@ -239,7 +239,7 @@ $moduleLock = Join-Path $work 'ArcBox.Modules.lock.json'
 Save-ArcBoxBootstrapArtifact 'ArcBox.Modules.ps1' $moduleHelper
 Save-ArcBoxBootstrapArtifact 'ArcBox.Modules.lock.json' $moduleLock
 . $moduleHelper
-Install-ArcBoxLockedModules -LockPath $moduleLock -Work $work -Pwsh $pwsh
+Install-ArcBoxLockedModules -LockPath $moduleLock -ScratchRoot $Env:ArcBoxDir -Pwsh $pwsh
 Write-ArcBoxHostEvent modules ok
 
 $stage = 'disk'

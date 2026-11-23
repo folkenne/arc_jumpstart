@@ -189,6 +189,8 @@ function ConvertTo-ArcBoxOperationError {
         ('(?i)\A(?:Required|Missing) dependency [''"](?<dependency>{0})[''"](?: was not found| is missing)?\.?\z' -f $package),
         ('(?i)\A(?:Gallery package|Staged module) [''"](?<package>{0})[''"] (?:has an invalid digest|has an invalid manifest|has an unexpected archive identity or version|is missing|could not be downloaded)\.?\z' -f $package),
         '\APSGallery (?:www|cdn)\.powershellgallery\.com (?:transport failure: [A-Za-z]{3,32}|HTTP status: [1-5][0-9]{2})\.\z',
+        '\APackage (?:byte count|SHA-512) does not match the lock\.\z',
+        '\A(?:Archive contains an unsafe file entry|Archive extraction failed|Manifest read failed|Manifest version mismatch|Loaded module version mismatch|Loaded module path mismatch|Locked dependency constraint is not satisfied|Manifest dependency constraint is not satisfied|Verified module files do not match the existing installation|Module origin includes a reparse point|Required module import failed|Required command provider check failed|Alternate required module is visible to the worker|Package archive identity or version mismatch)\.\z',
         '\A(?:Module command did not resolve from the verified version|Module operation failed; native error text withheld|Module package staging exceeded its time budget)\.\z',
         '(?i)\AThe remote server returned an error: \((?:400|401|403|404|429|500|502|503|504)\) [A-Za-z ]{1,45}\.\z',
         '(?i)\A(?:The request timed out|Unable to connect to the remote server|Module import verification (?:failed|timed out) before any lab data disk write|The module lock is invalid|The module destination already exists and was not replaced)\.?\z'
@@ -200,6 +202,45 @@ function ConvertTo-ArcBoxOperationError {
         }
     }
     @{message=$null; missingDependency=$null; messageDisposition='Withheld: unrecognized text; see restricted native log'}
+}
+
+function Get-ArcBoxModuleFailureDetail {
+    param($Detail)
+    if (!$Detail) { return }
+    $safe = @{}
+    $rules = @{
+        code = '\A(?:UnsafeEntry|ExtractionFailed|ManifestRead|ManifestVersion|ModuleVersion|ModulePath|LockDependency|ManifestDependency|ExistingFiles|ReparsePoint|ImportFailed|CommandProvider|AlternateModule|ArchiveIdentity|PackageLength|PackageDigest)\z'
+        observedVersion = '\A[0-9]+(?:\.[0-9]+){1,3}\z'
+        lockedVersion = '\A[0-9]+(?:\.[0-9]+){1,3}\z'
+        requestingModule = '\A[A-Za-z][A-Za-z0-9._-]{0,115}\z'
+        dependency = '\A[A-Za-z][A-Za-z0-9._-]{0,115}\z'
+        dependencyReason = '\A(?:MissingPin|IncompatiblePin|NotInClosure|Cycle)\z'
+        constraint = '\A[0-9., *\[\]()=<>]{1,60}\z'
+        expectedOrigin = '\Amachine-modules\\[A-Za-z0-9_.\\ -]{1,200}\z'
+        observedOrigin = '\A(?:machine-modules\\[A-Za-z0-9_.\\ -]{1,200}|<outside verified version>|<not available>)\z'
+        zipEntry = '\A[A-Za-z0-9_.()\[\]+ /-]{1,512}\z'
+        cause = '\A[A-Za-z][A-Za-z0-9.]{1,120}Exception\z'
+    }
+    foreach ($key in $rules.Keys) {
+        $value = $Detail.$key
+        if ($value -is [string] -and $value -cmatch $rules[$key] -and $value -notmatch '(?:^|[\\/])\.\.(?:[\\/]|$)|//') {
+            $safe[$key] = $value
+        }
+    }
+    if (($Detail.destinationLength -is [int] -or $Detail.destinationLength -is [long]) -and
+        $Detail.destinationLength -gt 0 -and $Detail.destinationLength -le 32767) {
+        $safe.destinationLength = [int]$Detail.destinationLength
+    }
+    foreach ($key in 'expectedBytes','observedBytes') {
+        $value = $Detail.$key
+        if (($value -is [int] -or $value -is [long]) -and $value -ge 0) { $safe[$key] = [long]$value }
+    }
+    $safe
+}
+
+function Set-ArcBoxProvisioningModulePath {
+    param([string]$MachineModules)
+    $env:PSModulePath = $MachineModules + ';' + (Join-Path $PSHOME 'Modules')
 }
 
 function Start-ArcBoxOperation {
@@ -214,13 +255,13 @@ function Start-ArcBoxOperation {
         version=$(if ($Version) { $Version }); repository=$(if ($Repository) { $Repository })
         engine=[string]$PSVersionTable.PSEdition; engineVersion=$PSVersionTable.PSVersion.ToString()}
     $routine = $Action -cin 'Download pinned module','Verify and stage module','Install verified module files','Download artifact',
-        'Import locked module','Verify command provider','Record loaded module provenance'
+        'Read locked module manifest','Import locked module','Verify command provider','Record loaded module provenance'
     Write-ArcBoxJournal $Stage INFO "$Action - $Target (started)." -Detail $op -Operation $Action -DetailedOnly:$routine -Durable
     $op
 }
 
 function Complete-ArcBoxOperation {
-    param([string]$Stage,[hashtable]$Operation,[System.Management.Automation.ErrorRecord]$Failure)
+    param([string]$Stage,[hashtable]$Operation,[System.Management.Automation.ErrorRecord]$Failure,[switch]$ContinueOnFailure)
     $detail = $Operation.Clone()
     if ($Failure) {
         $detail.outcome = 'Failed'
@@ -232,8 +273,16 @@ function Complete-ArcBoxOperation {
         foreach ($key in 'ArcBoxChildException','ArcBoxChildCategory') {
             if ($Failure.Exception.Data.Contains($key)) { $detail[$key] = $Failure.Exception.Data[$key] }
         }
+        if ($Stage -ceq 'modules') {
+            $detail.bootstrapContinued = [bool]$ContinueOnFailure
+            $detail.moduleFailure = Get-ArcBoxModuleFailureDetail $Failure.Exception.Data['ArcBoxModuleFailure']
+        }
         Write-ArcBoxJournal $Stage ERROR "$($detail.action) failed for $($detail.target). See the administrator log before retrying." `
-            -Detail $detail -Operation $detail.action -Failure $Failure -Durable
+            -Detail $detail -Operation $detail.action -Failure $Failure -DetailedOnly:$ContinueOnFailure -Durable
+        if ($ContinueOnFailure) {
+            Write-ArcBoxJournal $Stage WARNING "$($detail.action) failed for $($detail.target); lab provisioning is continuing past this failure." `
+                -Detail @{failedOperationId=$detail.operationId; bootstrapContinued=$true} -Durable
+        }
     } else {
         $detail.outcome = 'Succeeded'
         Write-ArcBoxJournal $Stage INFO "$($detail.action) completed for $($detail.target)." `
