@@ -10,10 +10,17 @@ if ($run -cnotmatch '\A[a-f0-9]{32}\z' -or
     $PSScriptRoot -ine "$env:ProgramFiles\ArcBoxPerf\$Attempt") {
     throw 'Performance collection must use the current attempt in its protected installation directory.'
 }
+. (Join-Path $PSScriptRoot 'ArcBox.Host.ps1')
+$boot = Get-ArcBoxBootTime
+$release = ([Environment]::GetEnvironmentVariable('templateBaseUrl','Machine') -split '/')[5]
+Start-ArcBoxJournal -ScriptName 'Measure-ArcBoxHost.ps1' -Boot $boot -Release $release
 $deadline = [datetimeoffset]::ParseExact(
     [IO.File]::ReadAllText("$PSScriptRoot\deadline.txt"), 'o', [Globalization.CultureInfo]::InvariantCulture)
 if ([datetimeoffset]::UtcNow -ge $deadline) {
-    if ($Action -eq 'sample') { return }
+    if ($Action -eq 'sample') {
+        Write-ArcBoxJournal performance INFO 'Sampler skipped: this attempt window already expired.'
+        return
+    }
     throw 'This attempt''s sampling window has expired.'
 }
 
@@ -28,6 +35,7 @@ if ($Action -ne 'sample') {
         $bytes = [Text.Encoding]::ASCII.GetBytes(($row | ConvertTo-Json -Compress))
         $stream.Write($bytes, 0, $bytes.Length)
     } finally { $stream.Dispose() }
+    Write-ArcBoxJournal performance INFO "Performance marker $Action recorded; see the protected sample data."
     return
 }
 
@@ -70,10 +78,11 @@ function Read-HostCounter($Key, $Spec, $OpenCounters) {
     }
 }
 
-$boot = (Get-CimInstance -ClassName Win32_OperatingSystem -Property LastBootUpTime).LastBootUpTime.ToUniversalTime().ToString('o')
 $output = "$PSScriptRoot\samples.jsonl"
 $openCounters = @{}
 $clock = [Diagnostics.Stopwatch]::StartNew()
+$samples = 0
+Write-ArcBoxJournal performance INFO 'Host sampler started on this boot; counters are kept in the protected samples file.'
 try {
     for ($tick = 0; [datetimeoffset]::UtcNow -lt $deadline; $tick++) {
         if ([IO.File]::Exists($output) -and [IO.FileInfo]::new($output).Length -ge 8MB) { break }
@@ -86,10 +95,17 @@ try {
             if ($row.fWritesPerSec -eq 0) { $row.fWriteMs = $null }
         }
         [IO.File]::AppendAllText($output, (($row | ConvertTo-Json -Compress) + [Environment]::NewLine))
+        $samples++
         $tick = [Math]::Max($tick, [Math]::Floor($clock.Elapsed.TotalSeconds / 5))
         $wait = [int]([Math]::Max(1, (5000 * ($tick + 1)) - $clock.ElapsedMilliseconds))
         Start-Sleep -Milliseconds $wait
     }
+    Write-ArcBoxJournal performance INFO "Host sampler ended this boot with $samples rows written; counter coverage must be checked independently." `
+        -ElapsedMs $clock.ElapsedMilliseconds -Detail @{rows=$samples}
+} catch {
+    Write-ArcBoxJournal performance WARNING 'Host sampler stopped; provisioning is independent. Check the sampler record and partial samples.' `
+        -ElapsedMs $clock.ElapsedMilliseconds -Failure $_ -Operation 'Read or record host counters' -Detail @{rows=$samples}
+    throw
 } finally {
     foreach ($counter in $openCounters.Values) { $counter.Dispose() }
 }

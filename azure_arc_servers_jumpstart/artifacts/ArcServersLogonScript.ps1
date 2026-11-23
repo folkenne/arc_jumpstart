@@ -12,6 +12,8 @@ $Env:ArcBoxIconDir = "$Env:ArcBoxDir\Icons"
 $Env:ArcBoxDscDir = "$Env:ArcBoxDir\DSC"
 $agentScript = "$Env:ArcBoxDir\agentScript"
 . (Join-Path $PSScriptRoot 'ArcBox.Host.ps1')
+Start-ArcBoxJournal -ScriptName 'ArcServersLogonScript.ps1' -Boot (Get-ArcBoxBootTime) `
+    -Release (([Environment]::GetEnvironmentVariable('templateBaseUrl','Machine') -split '/')[5])
 Import-Module Azure.Arc.Jumpstart.Common -ErrorAction Stop
 
 # Set variables to execute remote powershell scripts on guest VMs
@@ -33,7 +35,7 @@ if ([System.IO.File]::Exists($logFilePath)) {
     Rename-Item -Path $logFilePath -NewName $archivefile -Force
 }
 
-Start-Transcript -Path $logFilePath -Force | Out-Null
+Start-Transcript -Path $logFilePath -Append | Out-Null
 try {
 
 ################################################
@@ -173,7 +175,9 @@ $nestedLinuxUsername = "jumpstart"
 # Restarting Windows VM Network Adapters
 Write-Header "Restarting Network Adapters"
 foreach ($name in $Win2k25vmName, $Win2k22vmName, $SQLvmName) {
+    Write-ArcBoxJournal guest-access INFO "Opening PowerShell Direct to $name."
     $vmSession = Wait-ArcBoxWindowsSession -Name $name -Credential $WindowsCredential
+    Write-ArcBoxJournal guest-access INFO "PowerShell Direct authenticated to $name; adapter restart is separate."
     try { Invoke-Command -Session $vmSession -ScriptBlock { Get-NetAdapter | Restart-NetAdapter -ErrorAction Stop } }
     finally { Remove-PSSession -Session $vmSession }
 }
@@ -278,7 +282,15 @@ try {
 #Remove-PSSession -Session $ProxySessions
 
 #Install net-tools for ifconfig usage and python 3.10 for hybrid worker on Ubuntu-01 and Ubuntu-02
-$Ubuntu1Session = New-PSSession -HostName $Ubuntu01VmIp -KeyFilePath $privateKey -UserName $nestedLinuxUsername -Options $sshOptions
+Write-ArcBoxJournal guest-access INFO 'Opening the Ubuntu-01 SSH session; the Arc installer has not been requested.'
+try {
+    $Ubuntu1Session = New-PSSession -HostName $Ubuntu01VmIp -KeyFilePath $privateKey -UserName $nestedLinuxUsername -Options $sshOptions -ErrorAction Stop
+} catch {
+    Write-ArcBoxJournal guest-access ERROR 'Ubuntu-01 SSH did not open. The Arc installer was not invoked; check VM readiness, its address and SSH service.' `
+        -Failure $_ -Operation 'Open Ubuntu-01 SSH session' -LastConfirmed 'No installer dispatch; no installer log was expected.'
+    throw 'Ubuntu-01 SSH did not open. Check the client administrator log.'
+}
+Write-ArcBoxJournal guest-access INFO 'Ubuntu-01 SSH opened. This confirms session access, not an Arc connection.'
 Invoke-JSSudoCommand -Session $Ubuntu1Session -Command "sudo apt-get update"
 Invoke-JSSudoCommand -Session $Ubuntu1Session -Command "sudo apt install net-tools -y"
 # Invoke-JSSudoCommand -Session $Ubuntu1Session -Command "sudo apt install python3.10 -y"
@@ -304,23 +316,40 @@ Write-ArcBoxHostEvent arc-connect start
 $onboardingStarted = [datetimeoffset]::UtcNow
 
 # Onboarding the nested VMs as Azure Arc-enabled servers
+$connectFilter = (Get-ArcBoxConnectOutputFilter).ToString()
+$agentStatus = Get-ArcBoxAgentStatusCommand
 Write-Output "Onboarding the nested Windows VMs as Azure Arc-enabled servers"
 
 $accessToken = ConvertFrom-SecureString ((Get-AzAccessToken -AsSecureString).Token) -AsPlainText
-Invoke-Command -VMName $Win2k25vmName -Credential $WindowsCredential -ScriptBlock {
-    & (Join-Path $using:nestedVMArcBoxDir 'installArcAgent.ps1') -AccessToken $using:accessToken `
-        -SpnTenantId $using:tenantId -SubscriptionId $using:subscriptionId -ResourceGroup $using:resourceGroup `
-        -AzureLocation $using:azureLocation
-}
+try {
+    Invoke-ArcBoxGuestInstaller 'installArcAgent.ps1' 'Win2K25 Arc onboarding' -Transport 'PowerShell Direct' `
+        -ExpectedId "/subscriptions/$subscriptionId/resourceGroups/$resourceGroup/providers/Microsoft.HybridCompute/machines/$Win2k25vmName" `
+        -GuestLog 'Win2K25: %ProgramFiles%\ArcBoxGuestAgent\installationlog.txt (MSI); %ProgramData%\AzureConnectedMachineAgent\Log\azcmagent.log (connect).' -Action {
+        Invoke-Command -VMName $Win2k25vmName -Credential $WindowsCredential -ErrorAction Stop -WarningAction SilentlyContinue -InformationAction SilentlyContinue -ScriptBlock {
+            & (Join-Path $using:nestedVMArcBoxDir 'installArcAgent.ps1') -AccessToken $using:accessToken `
+                -SpnTenantId $using:tenantId -SubscriptionId $using:subscriptionId -ResourceGroup $using:resourceGroup `
+                -AzureLocation $using:azureLocation -FilterSource $using:connectFilter
+        }
+    } -ReadStatus {
+        Receive-ArcBoxAgentStatusJob {
+            Invoke-Command -VMName $Win2k25vmName -Credential $WindowsCredential -ScriptBlock $agentStatus -AsJob -ErrorAction Stop
+        }
+    }
+} finally { $accessToken = $null }
 
 Write-Output "Onboarding the nested Linux VMs as an Azure Arc-enabled servers"
 $accessToken = ConvertFrom-SecureString ((Get-AzAccessToken -AsSecureString).Token) -AsPlainText
 try {
-    Invoke-Command -Session $Ubuntu1Session -ScriptBlock {
-        param($Token, $Group, $Tenant, $Location, $Subscription)
-        $Token | sudo -n sh /var/tmp/arcbox-install-agent.sh $Group $Tenant $Location $Subscription
-        if ($LASTEXITCODE -ne 0) { throw 'Linux agent setup or registration failed. Inspect the guest agent log.' }
-    } -ArgumentList $accessToken, $resourceGroup, $tenantId, $azureLocation, $subscriptionId
+    Invoke-ArcBoxGuestInstaller 'installArcAgentUbuntu.sh' 'Ubuntu-01 Arc onboarding' -Transport 'SSH remoting' `
+        -ExpectedId "/subscriptions/$subscriptionId/resourceGroups/$resourceGroup/providers/Microsoft.HybridCompute/machines/$Ubuntu01vmName" `
+        -GuestLog 'Ubuntu-01: /var/log/arcbox-install-agent.log (stage and exit); /var/opt/azcmagent/log/azcmagent.log (connect).' -Action {
+        Invoke-Command -Session $Ubuntu1Session -ErrorAction Stop -WarningAction SilentlyContinue -InformationAction SilentlyContinue `
+            -ScriptBlock (Get-ArcBoxUbuntuInstallerCommand) -ArgumentList $accessToken, $resourceGroup, $tenantId, $azureLocation, $subscriptionId, $connectFilter
+    } -ReadStatus {
+        Receive-ArcBoxAgentStatusJob {
+            Invoke-Command -Session $Ubuntu1Session -ScriptBlock $agentStatus -AsJob -ErrorAction Stop
+        }
+    }
 } finally {
     $accessToken = $null
 }
@@ -377,6 +406,7 @@ Convert-JSImageToBitMap -SourceFilePath "$Env:ArcBoxDir\wallpaper.png" -Destinat
 
 } finally {
     Get-PSSession | Remove-PSSession -ErrorAction SilentlyContinue
-    Stop-Transcript | Out-Null
+    try { Stop-Transcript | Out-Null }
+    catch { Write-Warning 'Nested setup could not close its transcript; check the administrator journals.' -WarningAction Continue }
 }
 

@@ -21,11 +21,15 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $PSDefaultParameterValues['Invoke-WebRequest:UseBasicParsing'] = $true
 $PSDefaultParameterValues['Invoke-WebRequest:TimeoutSec'] = 120
+$earlyStage = 'reviewed source and access checks'
+try {
 if ($templateBaseUrl -cnotmatch '\Ahttps://raw\.githubusercontent\.com/folkenne/arc_jumpstart/[a-f0-9]{40}/azure_arc_servers_jumpstart/\z') {
     throw 'Supply the full commit SHA of the reviewed Level Up artifacts.'
 }
 if ($rdpPort -ne '3389') { throw 'Workshop access requires RDP port 3389.' }
+$earlyStage = 'loading the shared helper'
 . (Join-Path $PSScriptRoot 'ArcBox.Host.ps1')
+$earlyStage = 'checking and claiming the attempt'
 if ((Get-ScheduledTask -TaskName 'ArcBox-PostReboot' -ErrorAction SilentlyContinue) -or
     [Environment]::GetEnvironmentVariable('ArcBoxAttemptId', 'Machine')) {
     Stop-ArcBoxHostStep checkpoint 'A previous attempt exists. Recover from its checkpoints; do not rerun Bootstrap.'
@@ -44,6 +48,7 @@ try {
 } finally { $handle.Dispose() }
 [Environment]::SetEnvironmentVariable('ArcBoxAttemptId', $attempt, 'Machine')
 
+$earlyStage = 'preparing protected paths and the transcript'
 [System.Environment]::SetEnvironmentVariable('adminUsername', $adminUsername, [System.EnvironmentVariableTarget]::Machine)
 [System.Environment]::SetEnvironmentVariable('spnTenantId', $spnTenantId, [System.EnvironmentVariableTarget]::Machine)
 [System.Environment]::SetEnvironmentVariable('spnAuthority', $spnAuthority, [System.EnvironmentVariableTarget]::Machine)
@@ -84,15 +89,24 @@ New-Item -Path $Env:agentScript -ItemType directory -Force
 $hostHelper = Join-Path $Env:ArcBoxDir 'ArcBox.Host.ps1'
 Protect-ArcBoxDirectory -Path $Env:ArcBoxDir -LabRead
 Protect-ArcBoxDirectory -Path $Env:ArcBoxLogsDir
+Initialize-ArcBoxJournalLayout -Root $Env:ArcBoxLogsDir
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'ArcBox.Host.ps1') -Destination $hostHelper -Force
 
 [Environment]::SetEnvironmentVariable('ArcBoxRunId', $null, 'Machine')
 $clientBoot = Get-ArcBoxBootTime
 $transcript = Join-Path $Env:ArcBoxLogsDir 'Bootstrap.log'
 Start-Transcript -Path $transcript -Append | Out-Null
+} catch {
+    $type = $_.Exception.GetType().Name
+    $line = $_.InvocationInfo.ScriptLineNumber
+    Write-Warning "Bootstrap stopped before the journal initialized: $earlyStage ($type, line $line). Check the Bootstrap extension handler output; do not replay an existing claim." -WarningAction Continue
+    throw "Bootstrap could not initialize ($earlyStage). See the Bootstrap extension handler output."
+}
 $stage = 'bootstrap'
 $fallback = 'artifact-download'
+$profileLoadFailed = $false
 try {
+Start-ArcBoxJournal -ScriptName 'Bootstrap.ps1' -Boot $clientBoot -Release ($templateBaseUrl.Split('/')[5])
 $stage = 'artifacts'
 $fallback = 'artifact-pin'
 $options = ConvertFrom-Json -InputObject ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($bootstrapOptionsBase64)))
@@ -107,19 +121,27 @@ if (($options.PSObject.Properties['performance'] -and $options.performance -isno
 }
 $runId = if ($options.runId) { $options.runId } else { $attempt }
 [Environment]::SetEnvironmentVariable('ArcBoxRunId', $runId, 'Machine')
+$script:ArcBoxJournal.run = $runId
 Write-ArcBoxHostEvent bootstrap start
 $performanceDir = $null
 if ($options.performance) {
     try {
         $performanceDir = Start-ArcBoxHostBaseline -TemplateBaseUrl $templateBaseUrl -Attempt $attempt
         Write-ArcBoxHostEvent performance requested
-    } catch { Write-ArcBoxHostEvent performance failed performance }
+    } catch {
+        Write-ArcBoxJournal performance WARNING 'Host sampler dispatch failed; Bootstrap will continue without verified samples.' `
+            -Failure $_ -Operation 'Stage and request ArcBox-HostBaseline'
+        Write-ArcBoxHostEvent performance failed performance
+    }
+} else {
+    Write-ArcBoxJournal performance INFO 'Host sampler skipped: performance collection was not requested.'
 }
 $stage = 'artifacts'
 $privateScript = Get-ArcBoxPrivateScriptPath -Attempt $attempt
 $fallback = 'artifact-download'
 Invoke-WebRequest ($templateBaseUrl + "artifacts/ArcBox.Machine.ps1") -OutFile (Join-Path $work 'ArcBox.Machine.ps1')
 . (Join-Path $work 'ArcBox.Machine.ps1')
+Write-ArcBoxJournal artifacts INFO 'Machine package helper loaded; no installer has been dispatched.' -Owner 'ArcBox.Machine.ps1'
 $fallback = 'winget-setup'
 Assert-ArcBoxMachinePackages $options.machinePackages
 $fallback = 'artifact-download'
@@ -155,15 +177,36 @@ if ((Get-Item -LiteralPath $winlogon).Property -contains 'DefaultPassword') {
 $stage = 'artifacts'
 $fallback = 'artifact-download'
 Invoke-WebRequest ($templateBaseUrl + "artifacts/PSProfile.ps1") -OutFile $PsHome\Profile.ps1
-.$PsHome\Profile.ps1
+Write-ArcBoxJournal artifacts INFO 'Loading the lab PowerShell profile.' -Owner 'PSProfile.ps1'
+try { . (Join-Path $PSHOME 'Profile.ps1') }
+catch {
+    $profileLoadFailed = $true
+    Write-ArcBoxJournal artifacts ERROR 'The Windows PowerShell lab profile could not load. Bootstrap stopped before PowerShell installation or reboot; check the profile source and Bootstrap transcript.' `
+        -Owner 'PSProfile.ps1' -Failure $_ -Operation 'Load Windows PowerShell lab profile' `
+        -Detail @{profile='Profile.ps1'; engine='Windows PowerShell 5.1'; outcome='load-failed'} -LastConfirmed 'The profile was staged; it did not finish loading.'
+    throw
+}
+Write-ArcBoxJournal artifacts INFO 'Lab PowerShell profile loaded.' -Owner 'PSProfile.ps1'
 
 # Extending C:\ partition to the maximum size
 $stage = 'features'
 $fallback = 'windows-features'
-Write-Host "Extending C:\ partition to the maximum size"
+$stage = 'os-volume'
+$osWatch = [Diagnostics.Stopwatch]::StartNew()
 $osPartition = Get-Partition -DriveLetter C
 $osSize = (Get-PartitionSupportedSize -DriveLetter C).SizeMax
-if ($osSize -gt $osPartition.Size) { Resize-Partition -DriveLetter C -Size $osSize }
+if ($osSize -gt $osPartition.Size) {
+    Write-ArcBoxJournal os-volume INFO 'Expanding C: separately from lab disk initialization.' `
+        -Operation 'Resize-Partition C:' -Detail @{currentBytes=$osPartition.Size; requestedBytes=$osSize}
+    Resize-Partition -DriveLetter C -Size $osSize
+    $afterSize = (Get-Partition -DriveLetter C -ErrorAction Stop).Size
+    if ($afterSize -ne $osSize) { throw 'C: expansion returned but the requested capacity did not verify.' }
+    Write-ArcBoxJournal os-volume INFO 'OS volume C: expansion verified.' -ElapsedMs $osWatch.ElapsedMilliseconds `
+        -Detail @{previousBytes=$osPartition.Size; observedBytes=$afterSize}
+} else {
+    Write-ArcBoxJournal os-volume INFO 'C: expansion skipped: Windows reports no additional supported capacity.' `
+        -ElapsedMs $osWatch.ElapsedMilliseconds -Detail @{currentBytes=$osPartition.Size; supportedBytes=$osSize}
+}
 
 $stage = 'powershell'
 $fallback = 'ps-probe'
@@ -282,6 +325,7 @@ $desktop = New-ScheduledTaskAction -Execute $pwsh -Argument '-NoProfile -NonInte
 Register-ScheduledTask -TaskName 'ArcBox-Presentation' -TaskPath '\' `
     -Principal (New-ScheduledTaskPrincipal -UserId $labUser -LogonType Interactive) `
     -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $labUser) -Action $desktop -ErrorAction Stop | Out-Null
+Write-ArcBoxJournal tasks INFO 'Student presentation task registered. It has not run; it waits for student sign-in and is not part of unattended readiness.'
 Write-ArcBoxHostEvent tasks ok
 
 $stage = 'reboot'
@@ -298,10 +342,22 @@ Write-ArcBoxHostEvent reboot requested
 Write-ArcBoxHostEvent bootstrap ok
 } catch {
     $reason = Get-ArcBoxHostFailureCode $_ $fallback
-    $detail = $_ | Format-List * -Force | Out-String
-    Set-Content -LiteralPath (Join-Path $Env:ArcBoxLogsDir "Bootstrap-error-$attempt.log") -Value $detail
-    Write-ArcBoxHostEvent $stage failed $reason
+    if (-not $profileLoadFailed) {
+        Write-ArcBoxJournal $stage ERROR "Bootstrap stopped in $stage ($reason). $($script:ArcBoxHostReasons[$reason])" `
+            -Failure $_ -Operation $stage -LastConfirmed 'See the last completed stage in this attempt; no technical handoff was verified.'
+    }
+    $failure = $_
+    try {
+        $detail = "Bootstrap stage: $stage; decision: $reason; error: $($failure.Exception.GetType().FullName); line: $($failure.InvocationInfo.ScriptLineNumber). See the paired administrator log."
+        Set-Content -LiteralPath (Join-Path $Env:ArcBoxLogsDir "Bootstrap-error-$attempt.log") -Value $detail -ErrorAction Stop
+    } catch { Write-Warning 'Bootstrap failure receipt could not be written; check the administrator log and extension output.' -WarningAction Continue }
+    if ($stage -eq 'disk') {
+        Write-ArcBoxJournal bootstrap INFO 'After the disk failure, OS expansion, PowerShell installation, Hyper-V reboot and the SYSTEM worker were not reached in this attempt.'
+    }
+    if ($stage -eq 'os-volume') { $stage = 'features' }
+    Write-ArcBoxHostEvent $stage failed $reason -LegacyOnly:$profileLoadFailed
     throw "ArcBox bootstrap failed [$reason]. See the local Bootstrap transcript."
 } finally {
-    Stop-Transcript | Out-Null
+    try { Stop-Transcript | Out-Null }
+    catch { Write-Warning 'Bootstrap could not close its transcript. Check the journal and extension output.' -WarningAction Continue }
 }

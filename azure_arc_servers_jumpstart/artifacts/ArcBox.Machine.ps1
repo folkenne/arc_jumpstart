@@ -41,13 +41,28 @@ function Get-ArcBoxMatchedTool {
 }
 
 function Write-ArcBoxMachinePackageEvent {
-    param([string]$Id, [string]$Event, [hashtable]$Measured)
+    param([string]$Id, [string]$Event, [hashtable]$Measured, [Nullable[long]]$ElapsedMs)
     Write-Host ('ArcBoxMachinePackage ' + ([ordered]@{
         utc = [DateTime]::UtcNow.ToString('o')
         id = $Id
         event = $Event
         measured = $Measured
     } | ConvertTo-Json -Compress))
+    $severity = if ($Event -eq 'installer-exit' -and $Measured.code -notin 0,3010) { 'ERROR' }
+        elseif ($Event -eq 'installer-exit' -and $Measured.code -eq 3010) { 'WARNING' } else { 'INFO' }
+    $headline = switch ($Event) {
+        'installer-exit' {
+            if ($Measured.code -in 1641,3010) { "$Id installer returned native exit $($Measured.code) and requested or initiated a reboot. The worker will stop before further package dispatch." }
+            elseif ($Measured.code -ne 0) { "$Id installer failed with native exit $($Measured.code); inspect the package record and worker transcript before retrying." }
+            else { "$Id installer returned native exit 0; installed-file verification is separate." }
+        }
+        'destination-verified' { "$Id installed file matched its required digest." }
+        'skipped-existing' { "$Id installation skipped: the existing file matched its required digest." }
+        default { "$Id $Event requested; outcome not yet verified." }
+    }
+    # Only the known digests and native exit travel to the structured administrator record.
+    Write-ArcBoxJournal packages $severity $headline -Owner 'ArcBox.Machine.ps1' -ElapsedMs $ElapsedMs `
+        -Detail @{package=$Id; action=$Event; nativeExit=$Measured.code; installerSha256=$Measured.assetSha256; installedSha256=$Measured.sha256}
 }
 
 function Get-ArcBoxReviewedAssetRedirect {
@@ -110,6 +125,7 @@ function Install-ArcBoxMachinePackages {
     param($Packages, [string]$Work)
     Assert-ArcBoxMachinePackages $Packages
     foreach ($id in $script:ArcBoxPackageSpecs.Keys) {
+        $packageClock = [Diagnostics.Stopwatch]::StartNew()
         $kind, $relative = $script:ArcBoxPackageSpecs[$id]
         $base, $leaf = $relative -split '\\', 2
         $expected = Join-Path ([Environment]::GetEnvironmentVariable($base)) $leaf
@@ -143,6 +159,7 @@ function Install-ArcBoxMachinePackages {
                 Stop-ArcBoxHostStep winget-setup "Installer signature invalid for $id."
             }
             Write-ArcBoxMachinePackageEvent $id installer-start @{ assetSha256 = $assetHash }
+            $installerClock = [Diagnostics.Stopwatch]::StartNew()
             if ($kind -eq 'msi') {
                 $proc = Start-Process -FilePath "$env:SystemRoot\System32\msiexec.exe" -ArgumentList ('/i "{0}" /qn /norestart ALLUSERS=1' -f $asset) -Wait -PassThru
             } else {
@@ -154,7 +171,7 @@ function Install-ArcBoxMachinePackages {
                 }
                 $proc = Start-Process -FilePath $asset -ArgumentList $flags -Wait -PassThru
             }
-            Write-ArcBoxMachinePackageEvent $id installer-exit @{ code = $proc.ExitCode }
+            Write-ArcBoxMachinePackageEvent $id installer-exit @{ code = $proc.ExitCode } $installerClock.ElapsedMilliseconds
             if ($proc.ExitCode -in 1641,3010) {
                 Stop-ArcBoxHostStep machine-reboot-required "Installer for $id requested or started a reboot; do not dispatch downstream work."
             }
@@ -164,7 +181,7 @@ function Install-ArcBoxMachinePackages {
         if (-not $installed) {
             Stop-ArcBoxHostStep winget-setup "Installed machine tool for $id did not match the reviewed bytes."
         }
-        Write-ArcBoxMachinePackageEvent $id destination-verified $installed
+        Write-ArcBoxMachinePackageEvent $id destination-verified $installed $packageClock.ElapsedMilliseconds
         Remove-Item -LiteralPath $asset -Force
     }
     $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ";$env:ProgramFiles\ArcBoxTools"

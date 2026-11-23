@@ -1,27 +1,53 @@
 #!/bin/sh
 set -eu
+stage=guest-start
+installer_log=/var/log/arcbox-install-agent.log
+record() (
+    umask 077
+    printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1" >> "$installer_log"
+)
+finish() {
+    code=$?
+    trap - 0
+    record "Stopped at $stage with exit $code." || :
+    exit "$code"
+}
+trap finish 0
+record 'Ubuntu-01 installer started.'
 
-# Read the short-lived token on stdin. The staged script never contains a token.
-IFS= read -r accessToken
-test -n "$accessToken"
+# Host-to-guest transport remains stdin; the agent retains its original authentication flag.
+stage=input
+IFS= read -r access_token
+case "$access_token" in ''|*[!A-Za-z0-9._-]*) exit 1 ;; esac
 test "$#" -eq 4
-resourceGroup=$1
-spnTenantId=$2
-Azurelocation=$3
-subscriptionId=$4
 
-# Block Azure IMDS
-sudo ufw --force enable
-sudo ufw deny out from any to 169.254.169.254
-sudo ufw default allow incoming
+stage=firewall
+record 'Applying the nested Azure IMDS firewall baseline.'
+sudo ufw --force enable >/dev/null 2>&1
+sudo ufw deny out from any to 169.254.169.254 >/dev/null 2>&1
+sudo ufw default allow incoming >/dev/null 2>&1
 
-# Download the installation package
-wget https://aka.ms/azcmagent -O ~/install_linux_azcmagent.sh # 2>/dev/null
+stage=download
+record 'Downloading the Connected Machine agent installer.'
+wget https://aka.ms/azcmagent -O ~/install_linux_azcmagent.sh >/dev/null 2>&1
 
-# Install the hybrid agent
-bash ~/install_linux_azcmagent.sh # 2>/dev/null
+stage=package-install
+record 'Running the vendor package install; check the guest package manager logs if it fails.'
+bash ~/install_linux_azcmagent.sh >/dev/null 2>&1
+resource_name=$(hostname | sed -e "s/\b\(.\)/\u\1/g")
 
-ArcServerResourceName=$(hostname |sed -e "s/\b\(.\)/\u\1/g")
-
-# Run connect command
-azcmagent connect --access-token "$accessToken" --resource-group "$resourceGroup" --tenant-id "$spnTenantId" --location "$Azurelocation" --subscription-id "$subscriptionId" --resource-name "$ArcServerResourceName" --cloud "AzureCloud" --tags "Project=jumpstart_arcbox" --correlation-id "d009f5dd-dba8-4ac7-bac9-b54ef3a6671a"
+stage=agent-connect
+record 'Calling azcmagent connect; see /var/opt/azcmagent/log/azcmagent.log for agent diagnostics.'
+command -v azcmagent >/dev/null || exit 127
+code=0
+output=$(azcmagent connect --access-token "$access_token" --resource-group "$1" --tenant-id "$2" --location "$3" \
+    --subscription-id "$4" --resource-name "$resource_name" --cloud AzureCloud --tags 'Project=jumpstart_arcbox' \
+    --correlation-id 'd009f5dd-dba8-4ac7-bac9-b54ef3a6671a' 2>&1) || code=$?
+unset access_token
+printf 'ArcBoxConnectExit:%d\n' "$code"
+# No free text or query strings leave this command. The client still verifies the resource and tenant.
+printf '%s\n' "$output" | grep -Eio \
+    '\bAZCM[0-9]{4}\b|(^|[[:space:]])https://portal\.azure\.com/#(@[a-f0-9-]{36})?/resource/subscriptions/[a-f0-9-]{36}/resourceGroups/[a-z0-9._()-]+/providers/Microsoft\.HybridCompute/machines/[a-z0-9._-]+(/overview)?([[:space:]]|$)' || :
+unset output
+if [ "$code" -eq 0 ]; then stage=completed; fi
+exit "$code"

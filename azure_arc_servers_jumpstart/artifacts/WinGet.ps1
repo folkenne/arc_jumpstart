@@ -19,7 +19,18 @@ try {
     if (Test-Path -LiteralPath (Join-Path $work 'post-reboot.ok')) { return }
     Start-Transcript -Path "C:\ArcBox\Logs\WinGet-provisioning-$attempt.log" -Append | Out-Null
     $transcribing = $true
-    . (Join-Path $PSHOME 'Profile.ps1')
+    $boot = Get-ArcBoxBootTime
+    $artifactBase = [Environment]::GetEnvironmentVariable('templateBaseUrl', 'Machine')
+    Start-ArcBoxJournal -ScriptName 'WinGet.ps1' -Boot $boot -Release (($artifactBase -split '/')[5])
+    Write-ArcBoxJournal post-reboot INFO 'SYSTEM startup worker entered. Checking the registered task and Hyper-V reboot.'
+    Write-ArcBoxJournal artifacts INFO 'Loading the PowerShell 7 lab profile.' -Owner 'PSProfile.ps1'
+    try { . (Join-Path $PSHOME 'Profile.ps1') }
+    catch {
+        Write-ArcBoxJournal artifacts ERROR 'PowerShell 7 lab profile stopped before the startup worker could continue.' `
+            -Owner 'PSProfile.ps1' -Failure $_ -Operation 'Load PowerShell lab profile'
+        throw
+    }
+    Write-ArcBoxJournal artifacts INFO 'PowerShell 7 lab profile loaded.' -Owner 'PSProfile.ps1'
     $task = Get-ScheduledTask -TaskPath '\' -TaskName 'ArcBox-PostReboot'
     $action = @($task.Actions)
     if ($task.Principal.UserId -notin @('SYSTEM','NT AUTHORITY\SYSTEM','S-1-5-18') -or
@@ -28,14 +39,13 @@ try {
         $task.Principal.LogonType -ne 'ServiceAccount') {
         Stop-ArcBoxHostStep task-dispatch 'The registered SYSTEM startup task does not match the reviewed worker.'
     }
-    $boot = Get-ArcBoxBootTime
     $prepared = (Get-Content -LiteralPath (Join-Path $work 'PreparedOnBoot.txt') -Raw).Trim()
     # Startup can precede vmms; wait only for service readiness, not for a desktop.
     (Get-Service -Name vmms).WaitForStatus('Running', (New-TimeSpan -Minutes 3))
     Assert-ArcBoxPostReboot -PreparedOnBoot $prepared -CurrentBoot $boot -HyperVRunning $true
     Write-ArcBoxHostEvent reboot ok
     $inputFile = Get-Content -LiteralPath (Join-Path $work 'Inputs.json') -Raw | ConvertFrom-Json
-    $pins = Get-ArcBoxScriptPins -TemplateBaseUrl ([Environment]::GetEnvironmentVariable('templateBaseUrl', 'Machine'))
+    $pins = Get-ArcBoxScriptPins -TemplateBaseUrl $artifactBase
     $sqlHelper = Join-Path $work 'testDefenderForSQL.ps1'
     $sqlModule = 'C:\ArcBox\SqlAdvancedThreatProtectionShell.psm1'
     # Revalidate the attachment and already-prepared drive before doing any guest work.
@@ -43,10 +53,12 @@ try {
     Assert-ArcBoxMachinePackages $inputFile.machinePackages
     Write-ArcBoxHostEvent post-reboot start
     Invoke-ArcBoxCheckpoint $work dsc-common winget-setup {
-        Install-ArcBoxMachinePackages -Packages $inputFile.machinePackages -Work $work
+        Invoke-ArcBoxLoggedScript 'ArcBox.Machine.ps1' 'Packages' {
+            Install-ArcBoxMachinePackages -Packages $inputFile.machinePackages -Work $work
+        }
     }
     Invoke-ArcBoxCheckpoint $work dsc-itpro dsc-config {
-        Set-ArcBoxHyperVHost
+        Invoke-ArcBoxLoggedScript 'ArcBox.Machine.ps1' 'Hyper-V configuration' { Set-ArcBoxHyperVHost }
     }
     # Rehydrate the machine PATH even when the package checkpoints were already complete.
     $openSsh = Join-Path $env:SystemRoot 'System32\OpenSSH'
@@ -66,13 +78,17 @@ try {
             (ConvertTo-SecureString -String $nestedWindowsPassword -AsPlainText -Force))
         $nestedWindowsPassword = $null
         try {
-            & $privateScript -SqlHelperPath $sqlHelper -SqlHelperSha256 $pins['testDefenderForSQL.ps1'].Sha256 -WindowsCredential $credential
+            Invoke-ArcBoxLoggedScript 'ArcServersLogonScript.ps1' 'Nested guest setup' {
+                & $privateScript -SqlHelperPath $sqlHelper -SqlHelperSha256 $pins['testDefenderForSQL.ps1'].Sha256 -WindowsCredential $credential
+            }
         } finally {
             $credential.Password.Dispose()
         }
     }
     Invoke-ArcBoxCheckpoint $work workbook workbook {
-        & (Join-Path $work 'MonitorWorkbookLogonScript.ps1')
+        Invoke-ArcBoxLoggedScript 'MonitorWorkbookLogonScript.ps1' 'Workbook setup' {
+            & (Join-Path $work 'MonitorWorkbookLogonScript.ps1')
+        }
     }
     $finished = (Get-Date).ToUniversalTime().ToString('o')
     $completion = [ordered]@{
@@ -83,12 +99,18 @@ try {
         completedAt = $finished
     }
     [IO.File]::WriteAllText((Join-Path $work 'post-reboot.pending'), ($completion | ConvertTo-Json -Compress))
-    Write-ArcBoxHostEvent post-reboot ok
     [IO.File]::Move((Join-Path $work 'post-reboot.pending'), (Join-Path $work 'post-reboot.ok'))
+    Write-ArcBoxHostEvent post-reboot ok
+    Write-ArcBoxJournal post-reboot INFO 'SYSTEM completion marker written for this attempt and boot. The six-guest handoff still requires independent verification.'
 } catch {
+    Write-ArcBoxJournal post-reboot ERROR 'SYSTEM worker stopped. Unreached or externally dispatched stages are not verified; inspect the worker log and checkpoints.' `
+        -Failure $_ -Operation 'SYSTEM startup worker' -LastConfirmed 'See the last completed checkpoint for this attempt.'
     Write-ArcBoxHostEvent post-reboot failed (Get-ArcBoxHostFailureCode $_ 'checkpoint')
     throw
 } finally {
     $lock.Dispose()
-    if ($transcribing) { Stop-Transcript | Out-Null }
+    if ($transcribing) {
+        try { Stop-Transcript | Out-Null }
+        catch { Write-Warning 'The SYSTEM worker could not close its transcript; check the administrator journals.' -WarningAction Continue }
+    }
 }
