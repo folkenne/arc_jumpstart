@@ -1,0 +1,1710 @@
+{
+  "schema": 1,
+  "repository": "PSGallery",
+  "uri": "https://www.powershellgallery.com/api/v2",
+  "roots": {
+    "Az": "17.0.0",
+    "Az.ConnectedMachine": "1.2.0",
+    "Microsoft.PowerShell.SecretManagement": "1.1.2",
+    "Azure.Arc.Jumpstart.Common": "1.0.8",
+    "Pester": "6.2.0",
+    "Microsoft.PowerShell.PSResourceGet": "1.3.1"
+  },
+  "packages": [
+    {
+      "name": "Az",
+      "version": "17.0.0",
+      "sha512": "cde0404fe9a0997df548be8e157970b4a4aa1eb8f267411076ba8651b8b4b07fd1988e6a5b36f7cdbaa8b59638dc28219f26ede69aab1e3b3dc767e0e767d84c",
+      "bytes": 45639,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.5, )"
+        ],
+        [
+          "Az.Advisor",
+          "[3.0.0, 3.0.0]"
+        ],
+        [
+          "Az.Aks",
+          "[7.2.1, 7.2.1]"
+        ],
+        [
+          "Az.AnalysisServices",
+          "[1.3.0, 1.3.0]"
+        ],
+        [
+          "Az.ApiManagement",
+          "[4.2.2, 4.2.2]"
+        ],
+        [
+          "Az.App",
+          "[2.0.1, 2.0.1]"
+        ],
+        [
+          "Az.AppConfiguration",
+          "[2.2.0, 2.2.0]"
+        ],
+        [
+          "Az.ApplicationInsights",
+          "[3.0.0, 3.0.0]"
+        ],
+        [
+          "Az.ArcResourceBridge",
+          "[2.0.0, 2.0.0]"
+        ],
+        [
+          "Az.Attestation",
+          "[3.1.0, 3.1.0]"
+        ],
+        [
+          "Az.Automanage",
+          "[2.0.0, 2.0.0]"
+        ],
+        [
+          "Az.Automation",
+          "[1.13.0, 1.13.0]"
+        ],
+        [
+          "Az.Batch",
+          "[4.1.2, 4.1.2]"
+        ],
+        [
+          "Az.Billing",
+          "[2.3.0, 2.3.0]"
+        ],
+        [
+          "Az.Cdn",
+          "[7.0.0, 7.0.0]"
+        ],
+        [
+          "Az.CloudService",
+          "[3.0.0, 3.0.0]"
+        ],
+        [
+          "Az.CognitiveServices",
+          "[1.17.1, 1.17.1]"
+        ],
+        [
+          "Az.Compute",
+          "[11.12.0, 11.12.0]"
+        ],
+        [
+          "Az.ConfidentialLedger",
+          "[2.0.0, 2.0.0]"
+        ],
+        [
+          "Az.ConnectedMachine",
+          "[1.2.0, 1.2.0]"
+        ],
+        [
+          "Az.ContainerInstance",
+          "[5.1.0, 5.1.0]"
+        ],
+        [
+          "Az.ContainerRegistry",
+          "[5.2.1, 5.2.1]"
+        ],
+        [
+          "Az.CosmosDB",
+          "[1.22.0, 1.22.0]"
+        ],
+        [
+          "Az.DataBoxEdge",
+          "[1.3.0, 1.3.0]"
+        ],
+        [
+          "Az.Databricks",
+          "[2.0.0, 2.0.0]"
+        ],
+        [
+          "Az.DataFactory",
+          "[1.20.2, 1.20.2]"
+        ],
+        [
+          "Az.DataLakeAnalytics",
+          "[1.2.0, 1.2.0]"
+        ],
+        [
+          "Az.DataLakeStore",
+          "[1.6.0, 1.6.0]"
+        ],
+        [
+          "Az.DataMigration",
+          "[1.1.1, 1.1.1]"
+        ],
+        [
+          "Az.DataProtection",
+          "[3.1.1, 3.1.1]"
+        ],
+        [
+          "Az.DataShare",
+          "[1.2.0, 1.2.0]"
+        ],
+        [
+          "Az.DataTransfer",
+          "[1.0.0, 1.0.0]"
+        ],
+        [
+          "Az.DesktopVirtualization",
+          "[6.0.0, 6.0.0]"
+        ],
+        [
+          "Az.DevCenter",
+          "[3.0.0, 3.0.0]"
+        ],
+        [
+          "Az.DeviceRegistry",
+          "[1.0.0, 1.0.0]"
+        ],
+        [
+          "Az.DevTestLabs",
+          "[1.2.0, 1.2.0]"
+        ],
+        [
+          "Az.Discovery",
+          "[1.0.0, 1.0.0]"
+        ],
+        [
+          "Az.Dns",
+          "[2.2.0, 2.2.0]"
+        ],
+        [
+          "Az.DnsResolver",
+          "[2.0.0, 2.0.0]"
+        ],
+        [
+          "Az.EdgeAction",
+          "[1.0.0, 1.0.0]"
+        ],
+        [
+          "Az.ElasticSan",
+          "[1.7.0, 1.7.0]"
+        ],
+        [
+          "Az.EventGrid",
+          "[2.3.0, 2.3.0]"
+        ],
+        [
+          "Az.EventHub",
+          "[5.8.0, 5.8.0]"
+        ],
+        [
+          "Az.Fabric",
+          "[1.0.0, 1.0.0]"
+        ],
+        [
+          "Az.FileShare",
+          "[1.0.0, 1.0.0]"
+        ],
+        [
+          "Az.FirmwareAnalysis",
+          "[1.0.0, 1.0.0]"
+        ],
+        [
+          "Az.FrontDoor",
+          "[2.3.0, 2.3.0]"
+        ],
+        [
+          "Az.Functions",
+          "[5.0.1, 5.0.1]"
+        ],
+        [
+          "Az.HDInsight",
+          "[6.5.0, 6.5.0]"
+        ],
+        [
+          "Az.HealthcareApis",
+          "[3.0.0, 3.0.0]"
+        ],
+        [
+          "Az.HealthDataAIServices",
+          "[1.0.0, 1.0.0]"
+        ],
+        [
+          "Az.IotHub",
+          "[2.9.3, 2.9.3]"
+        ],
+        [
+          "Az.KeyVault",
+          "[6.6.2, 6.6.2]"
+        ],
+        [
+          "Az.Kusto",
+          "[3.1.0, 3.1.0]"
+        ],
+        [
+          "Az.LoadTesting",
+          "[2.0.0, 2.0.0]"
+        ],
+        [
+          "Az.LogicApp",
+          "[1.7.0, 1.7.0]"
+        ],
+        [
+          "Az.MachineLearning",
+          "[1.3.0, 1.3.0]"
+        ],
+        [
+          "Az.MachineLearningServices",
+          "[2.0.0, 2.0.0]"
+        ],
+        [
+          "Az.Maintenance",
+          "[1.7.1, 1.7.1]"
+        ],
+        [
+          "Az.ManagedServiceIdentity",
+          "[2.1.0, 2.1.0]"
+        ],
+        [
+          "Az.ManagedServices",
+          "[4.0.0, 4.0.0]"
+        ],
+        [
+          "Az.Marketplace",
+          "[1.0.0, 1.0.0]"
+        ],
+        [
+          "Az.MarketplaceOrdering",
+          "[2.2.0, 2.2.0]"
+        ],
+        [
+          "Az.Migrate",
+          "[3.2.0, 3.2.0]"
+        ],
+        [
+          "Az.Mission",
+          "[1.0.0, 1.0.0]"
+        ],
+        [
+          "Az.Monitor",
+          "[8.1.0, 8.1.0]"
+        ],
+        [
+          "Az.MySql",
+          "[2.0.0, 2.0.0]"
+        ],
+        [
+          "Az.NetAppFiles",
+          "[2.0.0, 2.0.0]"
+        ],
+        [
+          "Az.Network",
+          "[8.4.1, 8.4.1]"
+        ],
+        [
+          "Az.NetworkCloud",
+          "[3.0.0, 3.0.0]"
+        ],
+        [
+          "Az.Nginx",
+          "[2.0.0, 2.0.0]"
+        ],
+        [
+          "Az.NotificationHubs",
+          "[1.3.0, 1.3.0]"
+        ],
+        [
+          "Az.OperationalInsights",
+          "[3.4.1, 3.4.1]"
+        ],
+        [
+          "Az.Oracle",
+          "[2.0.0, 2.0.0]"
+        ],
+        [
+          "Az.PolicyInsights",
+          "[2.0.0, 2.0.0]"
+        ],
+        [
+          "Az.PowerBIEmbedded",
+          "[2.2.0, 2.2.0]"
+        ],
+        [
+          "Az.PrivateDns",
+          "[1.3.0, 1.3.0]"
+        ],
+        [
+          "Az.RecoveryServices",
+          "[7.16.0, 7.16.0]"
+        ],
+        [
+          "Az.RedisCache",
+          "[1.12.0, 1.12.0]"
+        ],
+        [
+          "Az.RedisEnterpriseCache",
+          "[2.1.0, 2.1.0]"
+        ],
+        [
+          "Az.Relay",
+          "[3.1.0, 3.1.0]"
+        ],
+        [
+          "Az.ResourceGraph",
+          "[1.3.0, 1.3.0]"
+        ],
+        [
+          "Az.ResourceMover",
+          "[2.0.0, 2.0.0]"
+        ],
+        [
+          "Az.Resources",
+          "[10.2.3, 10.2.3]"
+        ],
+        [
+          "Az.Security",
+          "[1.10.0, 1.10.0]"
+        ],
+        [
+          "Az.SecurityInsights",
+          "[4.0.0, 4.0.0]"
+        ],
+        [
+          "Az.ServiceBus",
+          "[4.4.1, 4.4.1]"
+        ],
+        [
+          "Az.ServiceFabric",
+          "[5.2.0, 5.2.0]"
+        ],
+        [
+          "Az.SignalR",
+          "[3.0.0, 3.0.0]"
+        ],
+        [
+          "Az.Sql",
+          "[7.3.0, 7.3.0]"
+        ],
+        [
+          "Az.SqlVirtualMachine",
+          "[3.0.0, 3.0.0]"
+        ],
+        [
+          "Az.StackHCI",
+          "[3.0.1, 3.0.1]"
+        ],
+        [
+          "Az.StackHCIVM",
+          "[2.0.0, 2.0.0]"
+        ],
+        [
+          "Az.Storage",
+          "[9.8.0, 9.8.0]"
+        ],
+        [
+          "Az.StorageAction",
+          "[2.0.0, 2.0.0]"
+        ],
+        [
+          "Az.StorageDiscovery",
+          "[1.0.0, 1.0.0]"
+        ],
+        [
+          "Az.StorageMover",
+          "[2.2.0, 2.2.0]"
+        ],
+        [
+          "Az.StorageSync",
+          "[2.7.2, 2.7.2]"
+        ],
+        [
+          "Az.StreamAnalytics",
+          "[3.0.0, 3.0.0]"
+        ],
+        [
+          "Az.Support",
+          "[2.1.0, 2.1.0]"
+        ],
+        [
+          "Az.Synapse",
+          "[3.3.0, 3.3.0]"
+        ],
+        [
+          "Az.TrafficManager",
+          "[1.6.0, 1.6.0]"
+        ],
+        [
+          "Az.Websites",
+          "[4.3.0, 4.3.0]"
+        ],
+        [
+          "Az.Workloads",
+          "[2.0.0, 2.0.0]"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Accounts",
+      "version": "5.5.5",
+      "sha512": "ad7f88ee80e3d3c774f7f172ae1160f1edadb6bc92245c9dc51110fb46fd4c465248c734488e3af446cce0e3d924ee6a96ff115a20b031576deac844f835e78f",
+      "bytes": 10331126,
+      "dependencies": []
+    },
+    {
+      "name": "Az.Advisor",
+      "version": "3.0.0",
+      "sha512": "fc368b2307654418e782fbb0bea19492f2198e8776d4e1d1306378ff40a0900d52b75cd2e9c57e8c89c0a178a44b17952663b1ada1cb225fb247dbee4e2ac7b7",
+      "bytes": 499847,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.3.1, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Aks",
+      "version": "7.2.1",
+      "sha512": "dc76055a688ab1257c63a008e878238c941aa71af4811942696606fdcbe184fa5b844ece3815fd1d2e212359431e75bc7159c464c1f986132b92f6a937911b1c",
+      "bytes": 1577641,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.1, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.AnalysisServices",
+      "version": "1.3.0",
+      "sha512": "cf50f8e4872e254614920762fd1313ba00cbf052f512dc5b3fb78acc76a491a32258e7134571c79445cc336177c79429fbf283bbb78d629c5135431df803b38e",
+      "bytes": 138761,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.ApiManagement",
+      "version": "4.2.2",
+      "sha512": "f28139140e082b14b9f3e168d2be40182a1034366bc6df2304ff35c9354ed17765d0ccf96c6169fcbcf490567f916746137f009df5b0ab90c76f5634db3cde43",
+      "bytes": 1335640,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.5, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.App",
+      "version": "2.0.1",
+      "sha512": "3958cd99bac77ecca2153bb741792dfea616245a6fb652f46e02102f4b4d09c23a1c1f2091d4f3db147364b323e912e8943e0b03d3bd9c6d5a2b1e389228a84f",
+      "bytes": 1929577,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[4.0.1, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.AppConfiguration",
+      "version": "2.2.0",
+      "sha512": "4d62db1c59d7db0518d3c18c7707607ca1d11ad54ec4976a7cbd298307e33085a8c222ebf16aca48d88f4ae60d84d1ec0878a244195cad9acc9ae78d9a8e5eda",
+      "bytes": 1102310,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.1, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.ApplicationInsights",
+      "version": "3.0.0",
+      "sha512": "bbccbffca3e74099f967ef545acc81fa509f2d895489e37ba67a9e8a5d7aa7f1969f1ac3ec991f04b2891d06dfb8ecc74885cbb87f5db6c10faef35a8c17a67c",
+      "bytes": 1127315,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.3.1, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.ArcResourceBridge",
+      "version": "2.0.0",
+      "sha512": "197712f331246da4f2d277296bd2cd05267ae753524893ba14aeee468e5e8eab830fe73de680ada1f14ef21bd586f9c1afa50a7b0fb259a7f3307a3dee073787",
+      "bytes": 442206,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.3.1, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Attestation",
+      "version": "3.1.0",
+      "sha512": "24df4193c002a04562c2c719017be5c5ae253da95ea0b3fe59dcadbba1b0c7d1b22f2a09fcc9b55e9006e236aead04301bcadd4e93267ffbb29872e3bb11f629",
+      "bytes": 623194,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Automanage",
+      "version": "2.0.0",
+      "sha512": "8698f7574afdb90b6390abde48d0a72094bc3833d3c6005e1bb0a0661b2cd380205f4e6b336f91f75a962dc081e5ed66f528ea3753d5e711833fd9d8ad3ccc58",
+      "bytes": 627687,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.3.1, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Automation",
+      "version": "1.13.0",
+      "sha512": "5356378528ea87e29f01302e76c7f58ee4ab7fa16a5093b4647317eb81fc0b3667421403003c45c3eae0da93ff49daf50719f05cf96a002bf8a44cd934cca315",
+      "bytes": 576427,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.5, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Batch",
+      "version": "4.1.2",
+      "sha512": "5c96ae4c2760578fe399274d82c51810edd07ce0d6dc93b595e99da1f1335c3203bb4352886b5dc97b3d84e4da8344591093d4f1e1189f385d8d2aeecdca53ba",
+      "bytes": 909101,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.5, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Billing",
+      "version": "2.3.0",
+      "sha512": "bec5f772054299f94f8c68f2589cb82b25d33428c1a539edbfba29c49067268618648ec7ec1d343bb5b535a2ca5d98b0d9a259d59a9b38a69ba56f526d22af44",
+      "bytes": 360150,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Cdn",
+      "version": "7.0.0",
+      "sha512": "329138f565d1d24884fca9edba2bc575dec7d9a146c8c9f05d54efb6189d368164a7bd456d77ab8df503aa40a82a5770ef6b7fd2e5b4a3fea74393fe9bca3224",
+      "bytes": 3161516,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.5, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.CloudService",
+      "version": "3.0.0",
+      "sha512": "f0aef85b0b2d458d5a63580be860f4c1e54b1060cdeb032c3da2f64a105919ec1464b0fa8e7f0a83c74a186ec9201dd3ac29d23fac022172c30e7b8e0ec1ed49",
+      "bytes": 1058505,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.CognitiveServices",
+      "version": "1.17.1",
+      "sha512": "6b17d1d84911f9b55a0b0ccaf0af694de5055be99b8dea6de0ce32926241bf921f51eb4ee305d553177fc51006a203ecbe8b1200cd0979a122fc13a30d310fbe",
+      "bytes": 276206,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.1, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Compute",
+      "version": "11.12.0",
+      "sha512": "74a5aeac2375df394c937f10a0ba8d5ff00fb36ff676aebd99317269b93428d7374976660c54e127713fb44778fbd73291d06b4a29ddd91d09a59b14b40f57ae",
+      "bytes": 3518778,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.5, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.ConfidentialLedger",
+      "version": "2.0.0",
+      "sha512": "fc4557122c14ba3514d49e461a6b21ab93c24066dc9e05e52e93a95ac8d054a22648b86fdcd6912f1e3ba780c5cd8c1b65b0a659341920b658db418cd01b64e5",
+      "bytes": 426801,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.3.1, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.ConnectedMachine",
+      "version": "1.2.0",
+      "sha512": "3a77e8c130c31af26d3903d5d002b3e06d3e9b4027349c3e67f38adfa82a9f38a90d75b736d3e7f7e911e9e6604821aaab213cac80422bea602ca4f567ba1aca",
+      "bytes": 1235060,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.4, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.ContainerInstance",
+      "version": "5.1.0",
+      "sha512": "7877b9917a227a590b250d96fbd788abf6de889b39f59a1e7f85191b6d2903f117568085a2065f1ebc247c4a69eb8b84281d0f4fda4cd45834a8fbf1c7232ed6",
+      "bytes": 838866,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.3, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.ContainerRegistry",
+      "version": "5.2.1",
+      "sha512": "fe57dd222db49f7bd41f74e33a5f5ab2a5e56a1f0262f4f412b9904bad866153334a0fd274ef978cdee5df557bbac07fdf68f88cefad816f303314c84871326c",
+      "bytes": 2045544,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.5, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.CosmosDB",
+      "version": "1.22.0",
+      "sha512": "c098651044c2ada6963b1ba7f74e525fed9c1a5451f8c7c18d7b3421f4d4211b77aeaaf3ab2add0708e8a9a96ed7b76521f66b7650789e13eaa71eb335c42966",
+      "bytes": 983496,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.3, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.DataBoxEdge",
+      "version": "1.3.0",
+      "sha512": "b263991f933d377ba840ce5c8c94ba118b22adad6466bded79494f4939354ab1a90ac6583606d347875beda20e2ae89544b19ade6d9583218bc01a5b34062c0d",
+      "bytes": 272303,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Databricks",
+      "version": "2.0.0",
+      "sha512": "0a843a3cfcb8253557deb1a0b22f35bc35ed9c87e6286b1e18e3ca9da9fea851bb501b447bcfe799d039ca84d0bdc24cc0ccf8759a725de1ab7257e08c3be111",
+      "bytes": 693975,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.DataFactory",
+      "version": "1.20.2",
+      "sha512": "37d9e6096e4c1de352e2943c452ad7a95c0c311f030771a4f3c6a4a23f7fce902e413ff91e4e842da671bf0570ce08eab29a01a40537916e1af360fbc102cba2",
+      "bytes": 1290057,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.3, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.DataLakeAnalytics",
+      "version": "1.2.0",
+      "sha512": "f04d13e895fc056c266206273d83e834dc33f7da4b428344c7d3e14df36fd104cc57aa054ba705dc9e05d9882d7fdc0224dd699a6ebc37cce2d95b886203c6ae",
+      "bytes": 314354,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.DataLakeStore",
+      "version": "1.6.0",
+      "sha512": "dcb3659e1a244bbcab619d2da54ea783c3952c4d1bf77ee48cf3185ab3ed3f784c019f754837e91c47d017b58a968c86245e4b97cb8b52a2828884ecdc8e0244",
+      "bytes": 732915,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.DataMigration",
+      "version": "1.1.1",
+      "sha512": "a68da79941a8b26ad3ab8a9cc463336cc1d60fcf14972526997c5813e0f95632c3b65d10359e573cd0c9e4b772a7eb055548df5b6386177d02be3fa27990e59e",
+      "bytes": 978763,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.1, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.DataProtection",
+      "version": "3.1.1",
+      "sha512": "a54b0a9173211f48d547a681916e4484f6fb1aa64272dd18db1828aa551828f6a70e21c730e3022b43bc29d927412c9b278f25c9ad103d3f293594c36c3d3613",
+      "bytes": 1696614,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.4, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.DataShare",
+      "version": "1.2.0",
+      "sha512": "3eb80d966bbea29f91af89404e70847a7d578b81aba0a93c27c2d30a0e926385084f0964e38822f27739f55ba1f139b4492d5d34fb5b9c8eeb6a53d85e2fc115",
+      "bytes": 223201,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.DataTransfer",
+      "version": "1.0.0",
+      "sha512": "0809e88d5207e1cd4cff454ca332e495b63c3ce2e305fa4e70eaa9a9d8e454744930b9a758a0fe742d919e04a74ea75fa9c1baeb253c8a1dad998761eb73db44",
+      "bytes": 747584,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.3.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.DesktopVirtualization",
+      "version": "6.0.0",
+      "sha512": "5c0f5e23b2365494d1395d57eb4e56c9501b5a71a01e1a09b41b2032fa6b53fa1f4e3bd518fb7e2d7a8a99f3b1c2d4476e6b7e3008019d325339d1b872dc1857",
+      "bytes": 1395367,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.DevCenter",
+      "version": "3.0.0",
+      "sha512": "4f180927ee2ff2fb5fd1164df74abf94f743a2aae5d434faa31f033c7e750b099ba002871291e3cc959f811922deff9a40c2fdff526c4f3457174697a55fdec4",
+      "bytes": 2994454,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.3.1, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.DeviceRegistry",
+      "version": "1.0.0",
+      "sha512": "b00eb26dea61d25a9b19c4b94f274cc5a9938d0b50c5838a33a4cdb8eabaf3700252bfdb866e49f7bb03edd8304992800c79716e4235bda725168ab4585b972b",
+      "bytes": 1207678,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.3.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.DevTestLabs",
+      "version": "1.2.0",
+      "sha512": "e299fc7d6d049fdf78e7994e276f35ba51251e87dd16a81103c839c351e2a23d9fa91f5fc983f55d8c83525c32a22366541faa557c894667498da95aa35f4cb5",
+      "bytes": 274739,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Discovery",
+      "version": "1.0.0",
+      "sha512": "a1f948e2e516a089c30f3e8a2e10a47fb037ca8581e11b35140b445ecb01b160731d8cfbe521161b978c69c5d4d32de6a0b16a0765d428a885b4f49464c6f697",
+      "bytes": 1019137,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.3, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Dns",
+      "version": "2.2.0",
+      "sha512": "0a0b76db2a231c8dd5146328c585fbbf268643c153e8bcb7b55728b6bde159d0e0b76f288e36a4e412d9a4a6a0ddc5d4a266c5727ca4f32567e197eb77958cdf",
+      "bytes": 564749,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.1, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.DnsResolver",
+      "version": "2.0.0",
+      "sha512": "649e35071519718ef1e2bf0bc148dc014e2872acb7332b29e7432018bfee521c3ac5a8b581483663e5606c63dea8f9d0b59abf496e4bf7a8b77d8b48f73b9559",
+      "bytes": 1059419,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.EdgeAction",
+      "version": "1.0.0",
+      "sha512": "e175765d33797f13153f77ec95ca23ec7482a613e8a915bbafa2f2c8f168693b74683ee02ec782bc1e98c5aba7a9898b0be363760e5a0fc6fc859a24ce47c0eb",
+      "bytes": 603109,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.4, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.ElasticSan",
+      "version": "1.7.0",
+      "sha512": "f649b50dcb9e10e965c4288e1c0617b67e77ceea9a751bda98c00bef23684b331a51feb0d55f854ff74766eb196c2d4e3bf6b5567e8c6d9a6940b2b3634bb6be",
+      "bytes": 771901,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.3.3, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.EventGrid",
+      "version": "2.3.0",
+      "sha512": "59dc6a25f52c9c65db31a04a4e165c70a71cf8593fdc47b9545a9de35833ea9bb05a8d9120388550f195a8d5b3472c216e3fc0bbfefe904ae51a1ce9707bac00",
+      "bytes": 2878222,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.3, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.EventHub",
+      "version": "5.8.0",
+      "sha512": "12901d0759275a558537eca95937a7ee414d09852f52e6c8727da42bbb73543bb530a83709f913bb74adf2f33d7e420190dfe534e7f8f2db89ad89ea429a9b9c",
+      "bytes": 1792547,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.4, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Fabric",
+      "version": "1.0.0",
+      "sha512": "417c63512b046844b73a95a62dd008b25b3dead01f33f04b8d9cf4283db69d112fe79c0642463beeee4c65c550441b065ed016dc3ecb9eb09bc92ba775d4f546",
+      "bytes": 441878,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.2.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.FileShare",
+      "version": "1.0.0",
+      "sha512": "bed885c442e518d6ad4dd2f04d66acf56aeaa6bb274acd618fd3a6ba03775c41714626dbc07f59ee252fe6cbda9eae340cf5f3873e5e7b22558aca279fcc5637",
+      "bytes": 574675,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.FirmwareAnalysis",
+      "version": "1.0.0",
+      "sha512": "23194f86201dfe28448b39c510eb9d731e8a870fdbed8a5823a5c41ddd47aef5c31b3655bf08b7b4df98a9226ed28cbebfda0bfe0cd9f6fc45166350d87bc56d",
+      "bytes": 603173,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.3.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.FrontDoor",
+      "version": "2.3.0",
+      "sha512": "6b75f18c7c2871eb5bf06dd9c35cfd1d08b328ca5ead8c4ad19554b0ac5eff198524e8d62ebfe61e1044da82ff652ce399671d0315b5e4a2ef3925976657ce73",
+      "bytes": 1294712,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.2, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Functions",
+      "version": "5.0.1",
+      "sha512": "001d04557934322f75d0e3667cedf7157861a6de92013a88cec64a4a116f7d38814e7e0a8a40bdd927fe3816f9da2d33199922729620af9cd5acc9bf10d90534",
+      "bytes": 5159736,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.2, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.HDInsight",
+      "version": "6.5.0",
+      "sha512": "2f9414ea516575d0367ba925794b5f60ae84941e7abe77a25d7fcfb5a31d7e7f3fc6289734c5a18a0010e5d85998065ea5c1f7c138891a942711c351ef11b42a",
+      "bytes": 590931,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.HealthcareApis",
+      "version": "3.0.0",
+      "sha512": "6f406726e4ede056ccce84d384f84196dc3d0d78c57b913c84e0cdf2f78aa3d63a50e21e970e66cafea3d1ab7e65928845c44eb0184c247c7e81b89188d63351",
+      "bytes": 950524,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.3.1, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.HealthDataAIServices",
+      "version": "1.0.0",
+      "sha512": "1f02c48d3bd61322debb4484df39a0ddbe1aa52fe4df3f35be60ae350f8c1a3a80379c1cf8d88294917feab7c8c8037d9de1ef52b7c1a37b1a82b6c36604690e",
+      "bytes": 432718,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[4.0.1, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.IotHub",
+      "version": "2.9.3",
+      "sha512": "133aa6b7ad55eafc636ab9983a7b4b1fb37ab3e21ef7cccd9cc66c830acbabdd435d8a6eff4c30c1a77df1c2d7b0483437ee8c5e3501f35202ef8b430c5445f9",
+      "bytes": 1255552,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.5, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.KeyVault",
+      "version": "6.6.2",
+      "sha512": "756cff186fe0fc043b24d2e242209c0eec2a8e50b0d1a717ef24a33a5a365d19cd5ded161c7300a70276acd9c9ff0979a8e50582aec55b878a65132ea26be972",
+      "bytes": 2997013,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.4, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Kusto",
+      "version": "3.1.0",
+      "sha512": "422e0f340a90c27e4ddcd47b77a757ac691a6976684ddd7aff35fce98b2f827f4a8ab078ee52cb3333b249cf6687c221625c64e6523a26acd0aa08143c46e706",
+      "bytes": 1528315,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.3, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.LoadTesting",
+      "version": "2.0.0",
+      "sha512": "8727efd792bf9c3e279db4bb2b526fef511b846c02e52575c0f22e68f8a75fdfd825b9646f73d76eabf463a20b779ad1a021ab6029ac8fab1dbeb1d0ec40b9e7",
+      "bytes": 455753,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.LogicApp",
+      "version": "1.7.0",
+      "sha512": "359ead383bc5f8ecff1fd04b058124c932657528728a59a103bb6ac1ad303610ccc7a3f37a7fb070d7d81a370bd5acd8aa1a47587d47b30abd188575fb42de81",
+      "bytes": 331047,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.MachineLearning",
+      "version": "1.3.0",
+      "sha512": "9c9bf8ad2b029bdc8106835a1e0bd7db89056c157cf16ea788322736e75195ddaa69620a952a6fa0cc6fd558a1334684fee303ab7937424518716f044c0fabea",
+      "bytes": 136032,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.MachineLearningServices",
+      "version": "2.0.0",
+      "sha512": "4679332f0312568af6064e39f4e015a4632b2541b736ffab51b81e88be346eb61131517d1bf6ad2d5bde82a5c42f3da074f1fb9c0c2f509277831a49647ca982",
+      "bytes": 3742627,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Maintenance",
+      "version": "1.7.1",
+      "sha512": "efcbb35eeaea25f7a1801f82c030f9afab4f77582dea80715863c8f5103e1cf4ff5027e648d5cfc34e4475daef913671bda7831ec25df3ab5dfed721893904c6",
+      "bytes": 304274,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.3, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.ManagedServiceIdentity",
+      "version": "2.1.0",
+      "sha512": "ea3b428857c9ef1ac9adf11d708fb0af3b6820d58f8fd36d2e6247d510cd23ca646e404f5c52ea2a17703f14c459a59d6fb9482f8eb5c1ffe03076e668f82dae",
+      "bytes": 506835,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.3, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.ManagedServices",
+      "version": "4.0.0",
+      "sha512": "41f582891b2fe5dee678212b8a20a3be082f0b006f695a9bec59fccd92ece8c03ec5c72a3594c532ec9a8fc06eb2e667f1ea32df9b1adb8305883940390c6813",
+      "bytes": 499136,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Marketplace",
+      "version": "1.0.0",
+      "sha512": "1794b3e203491160e693ec429eaf0a1f9f4fe0132df7c4d631ea976a5cbd92f3271577f2702b4970ad0a73547770e23c1a8ee803a9d2a7ea251e3b49f8820f80",
+      "bytes": 835939,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.4, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.MarketplaceOrdering",
+      "version": "2.2.0",
+      "sha512": "be7d54c8e34be3b3e002f13d18559f91b09d4ceac5ca8414142ae41d04e25f068d8902f3d99d1c33592c51a332ad9a734804aa243731ddb3c8ebda393774d581",
+      "bytes": 394011,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[4.2.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Migrate",
+      "version": "3.2.0",
+      "sha512": "098553bc845f8824cc67ab63e29e1af29e3e653dba6edc78b2f91cec9586501796d39a139b2d268eb021d758a6ef68eb3ff15f3ce486ff72700ebc0ce178d606",
+      "bytes": 3857927,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.4, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Mission",
+      "version": "1.0.0",
+      "sha512": "5052612d6810e05a231d8c55f49c612047c52f3a2fa883076e309235ad37dcdc701fb9436e12a4392e4d4ecd622278628afa4c01915b4cef89aabf3e8a2fb351",
+      "bytes": 1278079,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.3, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Monitor",
+      "version": "8.1.0",
+      "sha512": "dd368229ee2457c7a4ba6c1c7a7800fc1a6c2d4c515eedd20a4f717d1fbef679ffc7cf5951061e7f8becc220431ee0def6820c20ea3ec7f55d7380288503a8a3",
+      "bytes": 4622710,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.3, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.MySql",
+      "version": "2.0.0",
+      "sha512": "f7d4a5b6630b0d1cf09faf3f0d9c6655e87c074bfd4d8cb41b2b7525b2aac67874df54d15f1ddd505f282ec767719fa9bea9d7158c8e38793d00e842bfd9b276",
+      "bytes": 883353,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.NetAppFiles",
+      "version": "2.0.0",
+      "sha512": "0c79ff7d3ac3ac99694de5d38c856fd89055992311e12121519e49cb55c10cf349d68dbe843cb659bc939972ffee19f440d8e0244606bedfecce66d606e6783b",
+      "bytes": 649845,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.5, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Network",
+      "version": "8.4.1",
+      "sha512": "1772d9036e524ff51e75b443aebb9376bd248f7b0824e15e9ab7a001b41474a14f30baf89ae9133dacaf17ff13834c186b00ece3e3d4db661d58414287d250a3",
+      "bytes": 4276920,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.5, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.NetworkCloud",
+      "version": "3.0.0",
+      "sha512": "e1165cc807e1b08443b88637b2612755c8054bcd812afa08d6989da274a3bf75e5640d94eb0872cd25d12560f50d3ad619a4a8d4f554ee5302c5c0fdc0d9148d",
+      "bytes": 2134334,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Nginx",
+      "version": "2.0.0",
+      "sha512": "05dcccc2adba351b08269a2a1b0acb6cc47fc083a13b2595dd0acdfa3e3466807bbe2dcbbb062f621ed5ccc9123a67a60682589920f360abde410bc41730f6d2",
+      "bytes": 620062,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.3.1, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.NotificationHubs",
+      "version": "1.3.0",
+      "sha512": "22a6b979c8293145f680f2051bd347726fc152e8ee667cb3f78decc40af0425342b59c38ded3f8b21cdfc30072ecee1643ae8933f4de9bf6269770c6e1ec3c96",
+      "bytes": 134789,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.OperationalInsights",
+      "version": "3.4.1",
+      "sha512": "eea71b7622abb194d4e8b5cc6b5f75f2e8be0b2b6226e58b11c431927f695155f5b5e3175b1b1132e9500e5e93d948cc9f339c90e66955d21d2f6c868832501c",
+      "bytes": 319030,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.1, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Oracle",
+      "version": "2.0.0",
+      "sha512": "52efd94328be9b36f02be0532544171b508168685756d1b9bfb2b4e718599813c8037ef760cbc41a4d05178c74e6398db9533d59b9605f7da511dd58641a3ad8",
+      "bytes": 1678541,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.3.1, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.PolicyInsights",
+      "version": "2.0.0",
+      "sha512": "f10b946411c6ea109bd4980504fa4134047a0b06cdbf538bf3d830366e496e8b690ce46377075259a32e2a8bc442b37babe837f0fe460189f48df09bd0765f1a",
+      "bytes": 1079684,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.PowerBIEmbedded",
+      "version": "2.2.0",
+      "sha512": "5c76da974559f2a6d52212c7e604066533de3dc753ddfb7a9ac00098cd453e63708bb0e888a321b320c9429b0a0e7d9b032f8b4177d43391ce1666279d939857",
+      "bytes": 142807,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.PrivateDns",
+      "version": "1.3.0",
+      "sha512": "693b1cbd66d41d1b7897eb6949a5f046903f20adb9392ece2f612e5cf62f1615345347ee437220bcadd67c7a2a74c8d028f0f532fb3d91031dc89f9b425f8c76",
+      "bytes": 146682,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.RecoveryServices",
+      "version": "7.16.0",
+      "sha512": "73ffbb0862ab099647817bba0d50a1a042dce074a52a38a3f83a5ba309812fdf4c721f752ab227ffefe87741423e506f54973087a075e0f82c7a61e65ba6759e",
+      "bytes": 1965443,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.4, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.RedisCache",
+      "version": "1.12.0",
+      "sha512": "95eacdf969c3ef368c9df491b7e787b8d323344cf9ecfd234a1327098a2052b6df74830038f60f0280e49736306b074707e0e081a96fde3ba16e2a317f25d5f4",
+      "bytes": 271372,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.RedisEnterpriseCache",
+      "version": "2.1.0",
+      "sha512": "0308aacde4ac1512db7e9005fdec9305607250dfbaf785d0cbd33d84b72a8af49e0bec2b978cddb48611f4499b558a52cf93a319c845c6db5aa52c71909224ad",
+      "bytes": 913598,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.5, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Relay",
+      "version": "3.1.0",
+      "sha512": "4dd80f3ac2dde0eb85c4cb1054b6a18be0f51dd8acdccb4994d565b0d0df4054d099d29a243f85056fc3a7d84ed45948cf86f2506b410598dbc44aed6ddfe881",
+      "bytes": 987421,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.4, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.ResourceGraph",
+      "version": "1.3.0",
+      "sha512": "33fe04249fe0eb13f23526753c6563d47f98322dc747f571201c7a9574ff8122755afd91deba9062a3eb5fa762c5dce6fcfc77054cb310990144db0a19172e1a",
+      "bytes": 458026,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.ResourceMover",
+      "version": "2.0.0",
+      "sha512": "a5ff3b952826ff4a80990b3aa9ed053f5c3bcabe15945d727ff16595c5d3dd3d20a2df061174886d02b951b1bd22c3c3ef064d90ab6ef5736031f5ef9653630f",
+      "bytes": 617212,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Resources",
+      "version": "10.2.3",
+      "sha512": "ba4dfadaffacf3b6b458bd3818743a891b41a5c711d85b4b7a67b6182abdbbc34f27ebcd4d3f9763672a2249e13411bac8a3fe526a8971ec14d462218f7d6fd9",
+      "bytes": 6123816,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.5, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Security",
+      "version": "1.10.0",
+      "sha512": "420d87afcaf080013f27a1c58332c42562a0b82ba4aca33ac019bcf400d92935df844856a6337ef3a0d31e78c50472f6f07c01a79ece58df4af49b1eccf1aa75",
+      "bytes": 2055323,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.3, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.SecurityInsights",
+      "version": "4.0.0",
+      "sha512": "05ca392a62ba2f0426403ad41af8fda467c7504ac3396a7be6be53b6bb72f471fe7d4ed6699c7959621f93cbc613b181c25b2f6dba81f9b090a82cbe77d62ce5",
+      "bytes": 1907438,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.ServiceBus",
+      "version": "4.4.1",
+      "sha512": "f939040478ac88536abcd01f0dc0bd5a2f8e8b5fa9a781b452166df59e80d5e059f85f662660c3dfcc4dd38f12bc03401f73af3ad14961eeaea3df0aea86275f",
+      "bytes": 1680461,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.4, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.ServiceFabric",
+      "version": "5.2.0",
+      "sha512": "07b2e4185b72fc17a38ce6bbb86cabab16c788b3c7cfd3b6b240a944646153fab3a66dfd5bccc189928f72316672c3eb56f2febbc02c8b345e1dc4aa0b7b9109",
+      "bytes": 699046,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.SignalR",
+      "version": "3.0.0",
+      "sha512": "1cb21afd53aea75aac9ae9a8ba428bbb71e6d4cbd33e2f7b0605e0e535ca7d13197251141d296e5b36e53bb1c9de6c2d20cd387337ee8487aed3d9578e5e9055",
+      "bytes": 961294,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Sql",
+      "version": "7.3.0",
+      "sha512": "ea736bcffbcdeda5c70551fda6c0f984ced064845ede0a0c398b4f909884347be57a271f1bbffee9e80453584472c3d00b4d41a1be1452565a95b11e696ad71d",
+      "bytes": 1950995,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.4, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.SqlVirtualMachine",
+      "version": "3.0.0",
+      "sha512": "6c7c979803e262e6b5c7bd566a6e77c4359295e3f4d8913ac9167ce2f9c7e1eeb534dd143b12631096995d8591626316507accbb1aba9050df82cf7546f82442",
+      "bytes": 712936,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.StackHCI",
+      "version": "3.0.1",
+      "sha512": "e9ede505cc57b49f42f37a94aaeb9049e05e394c8cd119c2b5dae91ed2beecfe0faa5374e55720ee18518772ff1d022ca5ddf9cf38962cd05bd0d9dd6ee47eaf",
+      "bytes": 1159003,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.5, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.StackHCIVM",
+      "version": "2.0.0",
+      "sha512": "d41757545eca0dc9d8ae12fdef85b3f92946a88da8ff1ac7141409c4fdc6c0730486fe68bc2444d39d8ab5c5d39f8b78bfa797c9d9551b7f12e486607a089c39",
+      "bytes": 1657626,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Storage",
+      "version": "9.8.0",
+      "sha512": "7da98bf66d9cb17f7dcee20c422faea9d128782a4251bfefb0867daa1ff5d357816edacfc7601b868b92fb0b0cc3abb2d799fc9ccc3d49dbd2f81d517155a32f",
+      "bytes": 6551605,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.5, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.StorageAction",
+      "version": "2.0.0",
+      "sha512": "aaeb27da02a8a489854a3d670b2587a3b4b9ec11ce3deed6678b31a11359ef0e7874867f9171c67137db7bd3de4db0a3cd3e981739b82a48f17c407977d58d3d",
+      "bytes": 478544,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.StorageDiscovery",
+      "version": "1.0.0",
+      "sha512": "75105b29dd3b528196b110e9619d26599b45feb82aa95ccf6dad32228482817a9bf646e0492ffc958bbed38fd6ad821baee542262695661da72fd3f59fb22dad",
+      "bytes": 433989,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.3.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.StorageMover",
+      "version": "2.2.0",
+      "sha512": "de010e95d40be93b7fdb18e42e90ae92cff2edeb29380031113d300bc7f9d8f7bd328b209633e90a095ec5e16a9946266b859153151358fdb9c48a76e95e8d1b",
+      "bytes": 1022775,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.4, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.StorageSync",
+      "version": "2.7.2",
+      "sha512": "6eca28058919cd829b14f014958dc79d576e0792f1f6e0ba2ce855e50ce67fc6dfabd86a4dbc8c90befbdd1eb5b31c45c93a6d0d7734c4361790e79f37e87087",
+      "bytes": 524548,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.5, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.StreamAnalytics",
+      "version": "3.0.0",
+      "sha512": "9530328f7342c652a9e38b89919ecd253d380481cd6119ec9b64fbbc965435279a1ce06d80ce9d1a15fd9f212ee354236e4650466e541ad6a7a125fa03cab542",
+      "bytes": 1096339,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.3.1, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Support",
+      "version": "2.1.0",
+      "sha512": "5525fd0eec5770fa1f9db048ed94c60da21f23329d39d846f7169f3f1643a61538412935ff5672151d7372b64eb14076e81ef3ac67883f1f6f5a462d740037ce",
+      "bytes": 774251,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[4.0.1, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Synapse",
+      "version": "3.3.0",
+      "sha512": "9128d1b7c0b36914c8a3723f3c2d266d73d92c11f8275846953fa0ca9c0de14940209c3f7e4452643dacc897bbc747917a01adfde2dd212ee8566571d74e3d9a",
+      "bytes": 2640021,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.0, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.TrafficManager",
+      "version": "1.6.0",
+      "sha512": "23068f8f298c2a76f212d534ab0d6a9ccb6e90ef446fdfb2b2b1e79fe0b39d5008e818d4b62a6c8da3a0ea87857311a9c25d0201081add6418cf21331d557be8",
+      "bytes": 134997,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.4, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Websites",
+      "version": "4.3.0",
+      "sha512": "bae935a3a22810db5a9a8a3bd59110c1fc3714718df93677e9c3f8fbd632c3073620bcbc094a77ba21395f97e60bda810b183272b27a8f624c61d534b1014d91",
+      "bytes": 3060389,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.5.4, )"
+        ]
+      ]
+    },
+    {
+      "name": "Az.Workloads",
+      "version": "2.0.0",
+      "sha512": "3458d1edf2d563ae41f3919d6502492be4aa845c6409d1262cdc2611a6d65321716b521f46a149873fea0c397b13993438e7eb3954e72e1e42616bec5320ab17",
+      "bytes": 1533453,
+      "dependencies": [
+        [
+          "Az.Accounts",
+          "[5.3.1, )"
+        ]
+      ]
+    },
+    {
+      "name": "Azure.Arc.Jumpstart.Common",
+      "version": "1.0.8",
+      "sha512": "f6cc3b22a65144c6f458154ed1677e067dbfd935d9652aa1ccaf9743ed98abad4be4f12e18d553e947abb41a46748d6c8152c2f704e19d25a562209d0ede2206",
+      "bytes": 6041,
+      "dependencies": []
+    },
+    {
+      "name": "Microsoft.PowerShell.PSResourceGet",
+      "version": "1.3.1",
+      "sha512": "0ce7f0b6bd2f2047f823c5e82489686d9df91f2665705eb1d8574bd8db2404190d37852dd6526f417cbf534c38b158550c7c958cf2bf76e85e91d7483fe6b07b",
+      "bytes": 4289647,
+      "dependencies": []
+    },
+    {
+      "name": "Microsoft.PowerShell.SecretManagement",
+      "version": "1.1.2",
+      "sha512": "63505381d23f638f2960bc197491667f33e8c9219b5110b72c3e9480910c77f4b74a18de634ba4ac7e016a274792ea03a978b3ee05aeae8f38b646ad005ea361",
+      "bytes": 84356,
+      "dependencies": []
+    },
+    {
+      "name": "Pester",
+      "version": "6.2.0",
+      "sha512": "bbd9e5f171b6b8cbfce9cd5f4183ac9ca71fb3c69c1964d6ba1c728c89b40ea2ddab9bd1feaf5dccfaab35fd2b677ea0cd7705df20acd241f9dc58d0f9fb13e8",
+      "bytes": 465109,
+      "dependencies": []
+    }
+  ]
+}

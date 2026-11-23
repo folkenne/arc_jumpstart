@@ -91,7 +91,8 @@ function Write-ArcBoxJournal {
     param(
         [string]$Stage, [ValidateSet('INFO','WARNING','ERROR')][string]$Severity, [string]$Headline,
         [object]$Detail, [string]$Operation, [string]$LastConfirmed, [System.Management.Automation.ErrorRecord]$Failure,
-        [Nullable[long]]$ElapsedMs, [switch]$DetailedOnly, [string]$Owner, [string]$LocalPortalUrl
+        [Nullable[long]]$ElapsedMs, [switch]$DetailedOnly, [string]$Owner, [string]$LocalPortalUrl,
+        [switch]$Durable
     )
     $j = $script:ArcBoxJournal
     if (-not $j) { return }
@@ -156,7 +157,17 @@ function Write-ArcBoxJournal {
             if ($LocalPortalUrl) { $records['WorkshopDeployment.log'] += "  Azure portal: $LocalPortalUrl$nl" }
         }
         foreach ($sink in $records.Keys) {
-            try { [IO.File]::AppendAllText((Join-Path $j.root $sink), $records[$sink]) }
+            try {
+                $path = Join-Path $j.root $sink
+                if ($Durable) {
+                    $stream = [IO.FileStream]::new($path, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::Read, 4096, [IO.FileOptions]::WriteThrough)
+                    try {
+                        $bytes = [Text.Encoding]::UTF8.GetBytes($records[$sink])
+                        $stream.Write($bytes,0,$bytes.Length)
+                        $stream.Flush($true)
+                    } finally { $stream.Dispose() }
+                } else { [IO.File]::AppendAllText($path, $records[$sink]) }
+            }
             catch { $failed += $sink }
         }
     } catch {
@@ -165,7 +176,82 @@ function Write-ArcBoxJournal {
     if ($failed) {
         $summary = if ($Failure) { " Error type: $($Failure.Exception.GetType().FullName)." } else { '' }
         Write-Warning "Workshop journal write failed ($($failed -join ', ')) | Event $id | $Owner [$Stage/$Severity]. $Headline$summary Check task or extension output and surviving local logs." -WarningAction Continue
+        if ($Durable) { throw 'Required Bootstrap operation record could not be persisted.' }
     }
+}
+
+function ConvertTo-ArcBoxOperationError {
+    param([string]$Original)
+    $package = '(?:Az(?:\.[A-Za-z][A-Za-z0-9]{0,30})?|Microsoft\.PowerShell\.(?:PSResourceGet|SecretManagement)|Azure\.Arc\.Jumpstart\.Common|Pester)'
+    $patterns = @(
+        ('(?ix)\A(?:Package|Resource)\s+[''"](?<package>{0})[''"]\s+(?:was|could)\s+not\s+(?:be\s+)?found(?:\s+in\s+repository\s+[''"]PSGallery[''"])?(?:;\s+missing\s+dependency\s+[''"](?<dependency>{0})[''"])?\.?\z' -f $package),
+        ('(?ix)\AThe\s+specified\s+module\s+[''"](?<dependency>{0})[''"]\s+was\s+not\s+loaded\s+because\s+no\s+valid\s+module\s+file\s+was\s+found\s+in\s+any\s+module\s+directory\.\z' -f $package),
+        ('(?i)\A(?:Required|Missing) dependency [''"](?<dependency>{0})[''"](?: was not found| is missing)?\.?\z' -f $package),
+        ('(?i)\A(?:Gallery package|Staged module) [''"](?<package>{0})[''"] (?:has an invalid digest|has an invalid manifest|has an unexpected archive identity or version|is missing|could not be downloaded)\.?\z' -f $package),
+        '\APSGallery (?:www|cdn)\.powershellgallery\.com (?:transport failure: [A-Za-z]{3,32}|HTTP status: [1-5][0-9]{2})\.\z',
+        '\A(?:Module command did not resolve from the verified version|Module operation failed; native error text withheld|Module package staging exceeded its time budget)\.\z',
+        '(?i)\AThe remote server returned an error: \((?:400|401|403|404|429|500|502|503|504)\) [A-Za-z ]{1,45}\.\z',
+        '(?i)\A(?:The request timed out|Unable to connect to the remote server|Module import verification (?:failed|timed out) before any lab data disk write|The module lock is invalid|The module destination already exists and was not replaced)\.?\z'
+    )
+    foreach ($pattern in $patterns) {
+        if ($original.Length -le 360 -and $original -match $pattern) {
+            $missing = if ($Matches.ContainsKey('dependency')) { $Matches['dependency'] }
+            return @{message=$original; missingDependency=$missing; messageDisposition='Allowlisted'}
+        }
+    }
+    @{message=$null; missingDependency=$null; messageDisposition='Withheld: unrecognized text; see restricted native log'}
+}
+
+function Start-ArcBoxOperation {
+    param([string]$Stage,[string]$Action,[string]$Target,[string]$Version,[string]$Repository)
+    if (-not $script:ArcBoxJournal -or $Action -cnotmatch '\A[A-Za-z][A-Za-z0-9 .:-]{1,75}\z' -or
+        $Target -cnotmatch '\A[A-Za-z0-9][A-Za-z0-9 ._:/-]{0,115}\z' -or $Target -match '://' -or
+        $Version -cnotmatch '\A[0-9., \[\]()]{0,40}\z' -or
+        $Repository -cnotin '', 'PSGallery', 'Configured repository priority', 'Verified local staging', 'Verified machine modules') {
+        throw 'Invalid Bootstrap operation metadata.'
+    }
+    $op = @{operationId=[guid]::NewGuid().ToString('N'); outcome='Started'; action=$Action; target=$Target
+        version=$(if ($Version) { $Version }); repository=$(if ($Repository) { $Repository })
+        engine=[string]$PSVersionTable.PSEdition; engineVersion=$PSVersionTable.PSVersion.ToString()}
+    $routine = $Action -cin 'Download pinned module','Verify and stage module','Install verified module files','Download artifact',
+        'Import locked module','Verify command provider','Record loaded module provenance'
+    Write-ArcBoxJournal $Stage INFO "$Action - $Target (started)." -Detail $op -Operation $Action -DetailedOnly:$routine -Durable
+    $op
+}
+
+function Complete-ArcBoxOperation {
+    param([string]$Stage,[hashtable]$Operation,[System.Management.Automation.ErrorRecord]$Failure)
+    $detail = $Operation.Clone()
+    if ($Failure) {
+        $detail.outcome = 'Failed'
+        $safe = ConvertTo-ArcBoxOperationError $Failure.Exception.Message
+        if ($Stage -ceq 'modules' -and !$safe.message) {
+            $safe.message = 'Module operation failed; native error text withheld.'
+        }
+        foreach ($key in $safe.Keys) { $detail[$key] = $safe[$key] }
+        foreach ($key in 'ArcBoxChildException','ArcBoxChildCategory') {
+            if ($Failure.Exception.Data.Contains($key)) { $detail[$key] = $Failure.Exception.Data[$key] }
+        }
+        Write-ArcBoxJournal $Stage ERROR "$($detail.action) failed for $($detail.target). See the administrator log before retrying." `
+            -Detail $detail -Operation $detail.action -Failure $Failure -Durable
+    } else {
+        $detail.outcome = 'Succeeded'
+        Write-ArcBoxJournal $Stage INFO "$($detail.action) completed for $($detail.target)." `
+            -Detail $detail -Operation $detail.action -DetailedOnly -Durable
+    }
+}
+
+function Invoke-ArcBoxOperation {
+    param([string]$Stage,[string]$Action,[string]$Target,[scriptblock]$Command,[string]$Version,[string]$Repository)
+    $op = Start-ArcBoxOperation $Stage $Action $Target $Version $Repository
+    try { & $Command }
+    catch {
+        $failure = $_
+        try { Complete-ArcBoxOperation $Stage $op -Failure $failure }
+        catch { Write-Warning 'Operation failed, but its result record could not be persisted. Use the durable start as the last attempted action.' }
+        throw $failure
+    }
+    Complete-ArcBoxOperation $Stage $op
 }
 
 function Invoke-ArcBoxLoggedScript {
@@ -670,16 +756,22 @@ function Start-ArcBoxHostBaseline {
     }
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'ArcBox.Host.ps1') -Destination (Join-Path $dir 'ArcBox.Host.ps1') -ErrorAction Stop
     $scriptPath = Join-Path $dir 'Measure-ArcBoxHost.ps1'
-    Invoke-WebRequest -UseBasicParsing -Uri ($TemplateBaseUrl + 'artifacts/Measure-ArcBoxHost.ps1') `
-        -OutFile $scriptPath -MaximumRedirection 0 -TimeoutSec 30 -ErrorAction Stop
+    Invoke-ArcBoxOperation performance 'Download artifact' 'Measure-ArcBoxHost.ps1' {
+        Invoke-WebRequest -UseBasicParsing -Uri ($TemplateBaseUrl + 'artifacts/Measure-ArcBoxHost.ps1') `
+            -OutFile $scriptPath -MaximumRedirection 0 -TimeoutSec 30 -ErrorAction Stop
+    }
     [IO.File]::WriteAllText("$dir\deadline.txt", [datetimeoffset]::UtcNow.AddHours(12).ToString('o'))
     $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
         -Argument "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$scriptPath`" -Attempt $Attempt"
     $principal = New-ScheduledTaskPrincipal -UserId SYSTEM -LogonType ServiceAccount -RunLevel Highest
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([timespan]::FromHours(12))
-    Register-ScheduledTask -TaskName 'ArcBox-HostBaseline' -TaskPath '\' -Action $action -Trigger (New-ScheduledTaskTrigger -AtStartup) `
-        -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
-    Start-ScheduledTask -TaskName 'ArcBox-HostBaseline' -TaskPath '\' -ErrorAction Stop
+    Invoke-ArcBoxOperation performance 'Register startup task' 'ArcBox-HostBaseline' {
+        Register-ScheduledTask -TaskName 'ArcBox-HostBaseline' -TaskPath '\' -Action $action -Trigger (New-ScheduledTaskTrigger -AtStartup) `
+            -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+    }
+    Invoke-ArcBoxOperation performance 'Request task start' 'ArcBox-HostBaseline' {
+        Start-ScheduledTask -TaskName 'ArcBox-HostBaseline' -TaskPath '\' -ErrorAction Stop
+    }
     $dir
 }
 
@@ -886,44 +978,49 @@ function Initialize-ArcBoxDataDrive {
         $operation = 'Initialize-Disk'
         Write-ArcBoxJournal disk INFO "Write gate: recheck managed disk identity, blank layout and free F: before initializing Windows disk $($match.device.Number) ($style)." `
             -Detail @{operation=$operation; disk=$match.device.Number; expectedLayout='RAW/0 partitions'; partitionStyle=$style} -LastConfirmed $last
-        $current = Get-ArcBoxDataDisk $ExpectedId
-        Assert-ArcBoxSameDisk $match $current
-        if ($current.device.PartitionStyle -ne 'RAW' -or "$($current.device.NumberOfPartitions)" -cne '0' -or (Get-ArcBoxDriveState).occupied) {
-            Stop-ArcBoxHostStep disk-drift 'Disk layout or F: changed before initialization.'
+        Invoke-ArcBoxOperation disk 'Guard and initialize disk' "Windows disk $($match.device.Number)" {
+            $current = Get-ArcBoxDataDisk $ExpectedId
+            Assert-ArcBoxSameDisk $match $current
+            if ($current.device.PartitionStyle -ne 'RAW' -or "$($current.device.NumberOfPartitions)" -cne '0' -or (Get-ArcBoxDriveState).occupied) {
+                Stop-ArcBoxHostStep disk-drift 'Disk layout or F: changed before initialization.'
+            }
+            Initialize-Disk -InputObject $current.device -PartitionStyle $style -ErrorAction Stop | Out-Null
         }
-        $last = 'Initialization dispatched; confirm disk layout before recovery.'
-        Initialize-Disk -InputObject $current.device -PartitionStyle $style -ErrorAction Stop | Out-Null
         $last = "Initialize-Disk returned for disk $($match.device.Number); partitioning and formatting have not been requested."
         $operation = 'New-Partition'
-        $current = Get-ArcBoxDataDisk $ExpectedId
-        Assert-ArcBoxSameDisk $match $current
-        if ($current.device.PartitionStyle -ne $style -or (Get-ArcBoxDriveState).occupied -or
-            # Windows may create the reserved GPT partition itself.
-            ("$($current.device.NumberOfPartitions)" -cne '0' -and ($style -ne 'GPT' -or
-                "$($current.device.NumberOfPartitions)" -cne '1' -or
-                @(Get-Partition -DiskNumber $current.device.Number -ErrorAction Stop | Where-Object {
-                    $_.DiskNumber -eq $current.device.Number -and $_.GptType -eq '{e3c9e316-0b5c-4db8-817d-f92df00215ae}'
-                }).Count -ne 1))) {
-            Stop-ArcBoxHostStep disk-drift 'Initialized layout or F: changed before partitioning.'
+        $created = Invoke-ArcBoxOperation disk 'Guard and create partition with drive letter' "Windows disk $($match.device.Number) F:" {
+            $current = Get-ArcBoxDataDisk $ExpectedId
+            Assert-ArcBoxSameDisk $match $current
+            if ($current.device.PartitionStyle -ne $style -or (Get-ArcBoxDriveState).occupied -or
+                # Windows may create the reserved GPT partition itself.
+                ("$($current.device.NumberOfPartitions)" -cne '0' -and ($style -ne 'GPT' -or
+                    "$($current.device.NumberOfPartitions)" -cne '1' -or
+                    @(Get-Partition -DiskNumber $current.device.Number -ErrorAction Stop | Where-Object {
+                        $_.DiskNumber -eq $current.device.Number -and $_.GptType -eq '{e3c9e316-0b5c-4db8-817d-f92df00215ae}'
+                    }).Count -ne 1))) {
+                Stop-ArcBoxHostStep disk-drift 'Initialized layout or F: changed before partitioning.'
+            }
+            $before = [int]$current.device.NumberOfPartitions
+            $newPartition = New-Partition -InputObject $current.device -UseMaximumSize -DriveLetter F -ErrorAction Stop
+            @{before=$before; partition=$newPartition}
         }
-        $last = 'Partition creation dispatched; confirm current layout before recovery.'
-        $beforePartitions = [int]$current.device.NumberOfPartitions
-        $partition = New-Partition -InputObject $current.device -UseMaximumSize -DriveLetter F -ErrorAction Stop
+        $partition = $created.partition
+        $beforePartitions = $created.before
         $last = 'F: partition creation returned; formatting has not been requested.'
         $operation = 'Format-Volume'
-        $current = Get-ArcBoxDataDisk $ExpectedId
-        Assert-ArcBoxSameDisk $match $current
-        $drive = Get-ArcBoxDriveState
-        if ($current.device.PartitionStyle -ne $style -or $current.device.NumberOfPartitions -ne ($beforePartitions + 1) -or
-            $drive.partitions.Count -ne 1 -or $drive.partitions[0].DiskNumber -ne $current.device.Number -or
-            $drive.partitions[0].PartitionNumber -ne $partition.PartitionNumber -or $drive.partitions[0].Offset -ne $partition.Offset -or
-            $drive.partitions[0].Size -ne $partition.Size -or $drive.volumes.Count -ne 1 -or $drive.volumes[0].FileSystem -notin '',$null,'RAW') {
-            Stop-ArcBoxHostStep disk-drift 'The new F: partition identity or filesystem changed before formatting.'
+        Invoke-ArcBoxOperation disk 'Guard and format volume' 'F: NTFS VMsDisk' {
+            $current = Get-ArcBoxDataDisk $ExpectedId
+            Assert-ArcBoxSameDisk $match $current
+            $drive = Get-ArcBoxDriveState
+            if ($current.device.PartitionStyle -ne $style -or $current.device.NumberOfPartitions -ne ($beforePartitions + 1) -or
+                $drive.partitions.Count -ne 1 -or $drive.partitions[0].DiskNumber -ne $current.device.Number -or
+                $drive.partitions[0].PartitionNumber -ne $partition.PartitionNumber -or $drive.partitions[0].Offset -ne $partition.Offset -or
+                $drive.partitions[0].Size -ne $partition.Size -or $drive.volumes.Count -ne 1 -or $drive.volumes[0].FileSystem -notin '',$null,'RAW') {
+                Stop-ArcBoxHostStep disk-drift 'The new F: partition identity or filesystem changed before formatting.'
+            }
+            Format-Volume -Partition $drive.partitions[0] -FileSystem NTFS -NewFileSystemLabel VMsDisk -Confirm:$false -Force -ErrorAction Stop | Out-Null
         }
-        Write-ArcBoxJournal disk INFO "Format gate: verified the newly created F: partition on disk $($current.device.Number) and checked it is unformatted." `
-            -Operation 'Format-Volume' -LastConfirmed $last -Detail @{disk=$current.device.Number; partition=$partition.PartitionNumber; offset=$partition.Offset}
-        $last = 'Formatting dispatched; confirm the resulting volume before recovery.'
-        Format-Volume -Partition $drive.partitions[0] -FileSystem NTFS -NewFileSystemLabel VMsDisk -Confirm:$false -Force -ErrorAction Stop | Out-Null
+        $last = 'Formatting returned; verify the resulting volume before recovery.'
         $operation = 'Verify formatted F:'
         $current = Get-ArcBoxDataDisk $ExpectedId
         Assert-ArcBoxSameDisk $match $current
@@ -960,25 +1057,39 @@ function Install-ArcBoxPowerShell {
     $msi = "$RecoveryMsi.$([guid]::NewGuid().ToString('N')).msi"
     $phase = 'ps-download'
     try {
-        Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/PowerShell/PowerShell/releases/download/v7.6.10/PowerShell-7.6.10-win-x64.msi' -OutFile $msi -TimeoutSec 300 -ErrorAction Stop
+        Invoke-ArcBoxOperation powershell 'Download installer' 'PowerShell MSI' {
+            Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/PowerShell/PowerShell/releases/download/v7.6.10/PowerShell-7.6.10-win-x64.msi' -OutFile $msi -TimeoutSec 300 -ErrorAction Stop
+        } -Version '7.6.10'
         # Verify the publisher before execution and the actual binary before task registration.
         $phase = 'ps-signature'
-        $signature = Get-AuthenticodeSignature -FilePath $msi -ErrorAction Stop
-        if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(^|,\s*)O=Microsoft Corporation(,|$)') {
-            throw 'PowerShell MSI does not have a valid Microsoft publisher signature.'
-        }
+        Invoke-ArcBoxOperation powershell 'Verify installer publisher' 'PowerShell MSI' {
+            $signature = Get-AuthenticodeSignature -FilePath $msi -ErrorAction Stop
+            if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(^|,\s*)O=Microsoft Corporation(,|$)') {
+                throw 'PowerShell MSI does not have a valid Microsoft publisher signature.'
+            }
+        } -Version '7.6.10'
         if (-not $installed) {
             $phase = 'ps-install'
-            $result = Start-Process -FilePath "$env:SystemRoot\System32\msiexec.exe" -Wait -PassThru -ErrorAction Stop -ArgumentList (
-                '/I "{0}" /quiet /norestart ADD_EXPLORER_CONTEXT_MENU_OPENPOWERSHELL=1 ADD_FILE_CONTEXT_MENU_RUNPOWERSHELL=1 ENABLE_PSREMOTING=1 REGISTER_MANIFEST=1 USE_MU=1 ENABLE_MU=1 ADD_PATH=1' -f $msi)
-            if ($result.ExitCode -eq 1641) { $phase = 'ps-restart' }
-            if ($result.ExitCode -notin 0,3010) { throw "PowerShell MSI returned $($result.ExitCode); expected 0 or 3010." }
+            Invoke-ArcBoxOperation powershell 'Install MSI' 'PowerShell MSI' {
+                $result = Start-Process -FilePath "$env:SystemRoot\System32\msiexec.exe" -Wait -PassThru -ErrorAction Stop -ArgumentList (
+                    '/I "{0}" /quiet /norestart ADD_EXPLORER_CONTEXT_MENU_OPENPOWERSHELL=1 ADD_FILE_CONTEXT_MENU_RUNPOWERSHELL=1 ENABLE_PSREMOTING=1 REGISTER_MANIFEST=1 USE_MU=1 ENABLE_MU=1 ADD_PATH=1' -f $msi)
+                if ($result.ExitCode -notin 0,3010) {
+                    $failure = [InvalidOperationException]::new('PowerShell MSI failed.')
+                    $failure.Data['ArcBoxNativeExit'] = $result.ExitCode
+                    if ($result.ExitCode -eq 1641) { $failure.Data['ArcBoxReason'] = 'ps-restart' }
+                    throw $failure
+                }
+            } -Version '7.6.10'
             $phase = 'ps-probe'
-            if (-not (Test-ArcBoxPowerShell $Executable)) { throw 'Installed PowerShell failed the 7.6.10 probe.' }
+            Invoke-ArcBoxOperation powershell 'Verify installed engine' 'PowerShell 7' {
+                if (-not (Test-ArcBoxPowerShell $Executable)) { throw 'Installed PowerShell failed the 7.6.10 probe.' }
+            } -Version '7.6.10'
         }
         $phase = 'ps-download'
-        Move-Item -LiteralPath $msi -Destination $RecoveryMsi -Force -ErrorAction Stop
-    } catch { $_.Exception.Data['ArcBoxReason'] = $phase; throw }
+        Invoke-ArcBoxOperation powershell 'Retain recovery installer' 'PowerShell MSI' {
+            Move-Item -LiteralPath $msi -Destination $RecoveryMsi -Force -ErrorAction Stop
+        } -Version '7.6.10'
+    } catch { if (-not $_.Exception.Data['ArcBoxReason']) { $_.Exception.Data['ArcBoxReason'] = $phase }; throw }
     finally {
         if (Test-Path -LiteralPath $msi -PathType Leaf) { Remove-Item -LiteralPath $msi -Force -ErrorAction Continue }
     }

@@ -139,53 +139,63 @@ if ($options.performance) {
 $stage = 'artifacts'
 $privateScript = Get-ArcBoxPrivateScriptPath -Attempt $attempt
 $fallback = 'artifact-download'
-Invoke-WebRequest ($templateBaseUrl + "artifacts/ArcBox.Machine.ps1") -OutFile (Join-Path $work 'ArcBox.Machine.ps1')
+function Save-ArcBoxBootstrapArtifact([string]$RelativePath,[string]$Destination) {
+    Invoke-ArcBoxOperation artifacts 'Download artifact' $RelativePath {
+        Invoke-WebRequest ($templateBaseUrl + "artifacts/$RelativePath") -OutFile $Destination
+    }
+}
+Save-ArcBoxBootstrapArtifact 'ArcBox.Machine.ps1' (Join-Path $work 'ArcBox.Machine.ps1')
 . (Join-Path $work 'ArcBox.Machine.ps1')
 Write-ArcBoxJournal artifacts INFO 'Machine package helper loaded; no installer has been dispatched.' -Owner 'ArcBox.Machine.ps1'
 $fallback = 'winget-setup'
 Assert-ArcBoxMachinePackages $options.machinePackages
 $fallback = 'artifact-download'
 $bootMarker = Join-Path $work 'PreparedOnBoot.txt'
-Receive-ArcBoxPinnedScript $templateBaseUrl 'ArcServersLogonScript.ps1' $privateScript
-Receive-ArcBoxPinnedScript $templateBaseUrl 'testDefenderForSQL.ps1' (Join-Path $work 'testDefenderForSQL.ps1')
-Receive-ArcBoxPinnedScript $templateBaseUrl 'SqlAdvancedThreatProtectionShell.psm1' (Join-Path $Env:ArcBoxDir 'SqlAdvancedThreatProtectionShell.psm1')
-[IO.File]::WriteAllText((Join-Path $work 'Inputs.json'), ([ordered]@{
-    disk = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($dataDiskIdBase64))
-    machinePackages = $options.machinePackages
-} | ConvertTo-Json -Depth 6 -Compress))
-$stage = 'disk'
-$fallback = 'disk-discovery'
-Write-ArcBoxHostEvent disk start
-$diskId = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($dataDiskIdBase64))
-Initialize-ArcBoxDataDrive -ExpectedId $diskId
-New-Item -Path $Env:ArcBoxVMDir -ItemType directory -Force
-Protect-ArcBoxDirectory -Path $Env:ArcBoxVMDir
-Write-ArcBoxHostEvent disk ok
-if ($performanceDir) {
-    try { [IO.File]::WriteAllText("$performanceDir\disk-ready.txt", 'F:') }
-    catch { Write-ArcBoxHostEvent performance failed performance }
+Invoke-ArcBoxOperation artifacts 'Receive pinned script' 'ArcServersLogonScript.ps1' {
+    Receive-ArcBoxPinnedScript $templateBaseUrl 'ArcServersLogonScript.ps1' $privateScript
 }
-
+Invoke-ArcBoxOperation artifacts 'Receive pinned script' 'testDefenderForSQL.ps1' {
+    Receive-ArcBoxPinnedScript $templateBaseUrl 'testDefenderForSQL.ps1' (Join-Path $work 'testDefenderForSQL.ps1')
+}
+Invoke-ArcBoxOperation artifacts 'Receive pinned script' 'SqlAdvancedThreatProtectionShell.psm1' {
+    Receive-ArcBoxPinnedScript $templateBaseUrl 'SqlAdvancedThreatProtectionShell.psm1' (Join-Path $Env:ArcBoxDir 'SqlAdvancedThreatProtectionShell.psm1')
+}
+Invoke-ArcBoxOperation artifacts 'Save protected worker inputs' 'Inputs.json' {
+    [IO.File]::WriteAllText((Join-Path $work 'Inputs.json'), ([ordered]@{
+        disk = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($dataDiskIdBase64))
+        machinePackages = $options.machinePackages
+    } | ConvertTo-Json -Depth 6 -Compress))
+}
 # The startup worker is a service task, not a desktop logon.
 $winlogon = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
-Set-ItemProperty -LiteralPath $winlogon -Name AutoAdminLogon -Value '0'
+Invoke-ArcBoxOperation bootstrap 'Disable automatic logon' 'Winlogon' {
+    Set-ItemProperty -LiteralPath $winlogon -Name AutoAdminLogon -Value '0'
+}
 if ((Get-Item -LiteralPath $winlogon).Property -contains 'DefaultPassword') {
-    Remove-ItemProperty -LiteralPath $winlogon -Name DefaultPassword
+    Invoke-ArcBoxOperation bootstrap 'Remove obsolete automatic logon value' 'Winlogon' {
+        Remove-ItemProperty -LiteralPath $winlogon -Name DefaultPassword
+    }
 }
 
 # Copy PowerShell Profile and Reload
 $stage = 'artifacts'
 $fallback = 'artifact-download'
-Invoke-WebRequest ($templateBaseUrl + "artifacts/PSProfile.ps1") -OutFile $PsHome\Profile.ps1
+$profileFile = Join-Path $PSHOME 'Profile.ps1'
+Save-ArcBoxBootstrapArtifact 'PSProfile.ps1' $profileFile
 Write-ArcBoxJournal artifacts INFO 'Loading the lab PowerShell profile.' -Owner 'PSProfile.ps1'
-try { . (Join-Path $PSHOME 'Profile.ps1') }
+$profileOperation = Start-ArcBoxOperation artifacts 'Load Windows PowerShell profile' 'PSProfile.ps1'
+try { . $profileFile }
 catch {
     $profileLoadFailed = $true
+    $profileFailure = $_
+    try { Complete-ArcBoxOperation artifacts $profileOperation -Failure $profileFailure }
+    catch { Write-Warning 'Profile load failed; paired operation result was not verified.' }
     Write-ArcBoxJournal artifacts ERROR 'The Windows PowerShell lab profile could not load. Bootstrap stopped before PowerShell installation or reboot; check the profile source and Bootstrap transcript.' `
-        -Owner 'PSProfile.ps1' -Failure $_ -Operation 'Load Windows PowerShell lab profile' `
+        -Owner 'PSProfile.ps1' -Failure $profileFailure -Operation 'Load Windows PowerShell lab profile' `
         -Detail @{profile='Profile.ps1'; engine='Windows PowerShell 5.1'; outcome='load-failed'} -LastConfirmed 'The profile was staged; it did not finish loading.'
-    throw
+    throw $profileFailure
 }
+Complete-ArcBoxOperation artifacts $profileOperation
 Write-ArcBoxJournal artifacts INFO 'Lab PowerShell profile loaded.' -Owner 'PSProfile.ps1'
 
 # Extending C:\ partition to the maximum size
@@ -198,9 +208,12 @@ $osSize = (Get-PartitionSupportedSize -DriveLetter C).SizeMax
 if ($osSize -gt $osPartition.Size) {
     Write-ArcBoxJournal os-volume INFO 'Expanding C: separately from lab disk initialization.' `
         -Operation 'Resize-Partition C:' -Detail @{currentBytes=$osPartition.Size; requestedBytes=$osSize}
-    Resize-Partition -DriveLetter C -Size $osSize
-    $afterSize = (Get-Partition -DriveLetter C -ErrorAction Stop).Size
-    if ($afterSize -ne $osSize) { throw 'C: expansion returned but the requested capacity did not verify.' }
+    $afterSize = Invoke-ArcBoxOperation os-volume 'Resize and verify OS partition' 'C:' {
+        Resize-Partition -DriveLetter C -Size $osSize
+        $size = (Get-Partition -DriveLetter C -ErrorAction Stop).Size
+        if ($size -ne $osSize) { throw 'C: expansion returned but the requested capacity did not verify.' }
+        $size
+    }
     Write-ArcBoxJournal os-volume INFO 'OS volume C: expansion verified.' -ElapsedMs $osWatch.ElapsedMilliseconds `
         -Detail @{previousBytes=$osPartition.Size; observedBytes=$afterSize}
 } else {
@@ -213,35 +226,54 @@ $fallback = 'ps-probe'
 Write-ArcBoxHostEvent powershell start
 $pwsh = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
 Install-ArcBoxPowerShell -Executable $pwsh -RecoveryMsi (Join-Path $Env:ArcBoxDir 'PowerShell-7.6.10-win-x64.msi')
-Copy-Item $PsHome\Profile.ps1 -Destination (Join-Path (Split-Path -Parent $pwsh) 'Profile.ps1') -Force
+Invoke-ArcBoxOperation powershell 'Install lab profile' 'PowerShell 7 Profile.ps1' {
+    Copy-Item -LiteralPath $profileFile -Destination (Join-Path (Split-Path -Parent $pwsh) 'Profile.ps1') -Force
+}
 Write-ArcBoxHostEvent powershell ok
 
 $stage = 'modules'
 $fallback = 'module-setup'
 Write-ArcBoxHostEvent modules start
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force
-Install-Module -Name Microsoft.PowerShell.PSResourceGet -Force -Scope AllUsers
-Import-Module Microsoft.PowerShell.PSResourceGet
-$modules = @('Az', 'Az.ConnectedMachine', 'Microsoft.PowerShell.SecretManagement', 'Azure.Arc.Jumpstart.Common', 'Pester')
-foreach ($module in $modules) {
-    Install-PSResource -Name $module -Scope AllUsers -Quiet -AcceptLicense -TrustRepository
-}
-& $pwsh -NoLogo -NoProfile -NonInteractive -Command '$ErrorActionPreference = "Stop"; Import-Module Microsoft.PowerShell.PSResourceGet, Az.Accounts, Az.ConnectedMachine, Azure.Arc.Jumpstart.Common'
-if ($LASTEXITCODE -ne 0) { throw 'Required modules failed to import in the PowerShell 7 task host.' }
+$moduleHelper = Join-Path $work 'ArcBox.Modules.ps1'
+$moduleLock = Join-Path $work 'ArcBox.Modules.lock.json'
+Save-ArcBoxBootstrapArtifact 'ArcBox.Modules.ps1' $moduleHelper
+Save-ArcBoxBootstrapArtifact 'ArcBox.Modules.lock.json' $moduleLock
+. $moduleHelper
+Install-ArcBoxLockedModules -LockPath $moduleLock -Work $work -Pwsh $pwsh
 Write-ArcBoxHostEvent modules ok
+
+$stage = 'disk'
+$fallback = 'disk-discovery'
+Write-ArcBoxHostEvent disk start
+$diskId = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($dataDiskIdBase64))
+Initialize-ArcBoxDataDrive -ExpectedId $diskId
+Invoke-ArcBoxOperation disk 'Create guest storage directory' 'F: Virtual Machines' {
+    New-Item -Path $Env:ArcBoxVMDir -ItemType directory -Force | Out-Null
+}
+Invoke-ArcBoxOperation disk 'Protect guest storage directory' 'F: Virtual Machines' {
+    Protect-ArcBoxDirectory -Path $Env:ArcBoxVMDir
+}
+Write-ArcBoxHostEvent disk ok
+if ($performanceDir) {
+    try { [IO.File]::WriteAllText("$performanceDir\disk-ready.txt", 'F:') }
+    catch { Write-ArcBoxHostEvent performance failed performance }
+}
 
 # Installing DHCP service
 $stage = 'features'
 $fallback = 'windows-features'
 Write-Output "Installing DHCP service"
-if (-not (Install-WindowsFeature -Name DHCP -IncludeManagementTools).Success) {
-    throw 'DHCP feature installation failed.'
+Invoke-ArcBoxOperation features 'Install Windows feature' 'DHCP' {
+    if (-not (Install-WindowsFeature -Name DHCP -IncludeManagementTools).Success) {
+        throw 'DHCP feature installation failed.'
+    }
 }
 # PowerShell SSH remoting needs a machine client, not one registered in a student profile.
 $openSsh = 'OpenSSH.Client~~~~0.0.1.0'
 if ((Get-WindowsCapability -Online -Name $openSsh).State -ne 'Installed') {
-    Add-WindowsCapability -Online -Name $openSsh | Out-Null
+    Invoke-ArcBoxOperation features 'Install Windows capability' 'OpenSSH.Client' {
+        Add-WindowsCapability -Online -Name $openSsh | Out-Null
+    }
 }
 
 $stage = 'artifacts'
@@ -251,63 +283,69 @@ Write-Header "Fetching GitHub Artifacts"
 
 # All flavors
 Write-Host "Fetching Artifacts for All Flavors"
-Invoke-WebRequest "https://raw.githubusercontent.com/azure/arc_jumpstart_docs/main/img/wallpaper/arcbox_wallpaper_dark.png" -OutFile $Env:ArcBoxDir\wallpaper.png
-Invoke-WebRequest ($templateBaseUrl + "artifacts/MonitorWorkbookLogonScript.ps1") -OutFile (Join-Path $work 'MonitorWorkbookLogonScript.ps1')
-Invoke-WebRequest ($templateBaseUrl + "artifacts/mgmtMonitorWorkbook.parameters.json") -OutFile $Env:ArcBoxDir\mgmtMonitorWorkbook.parameters.json
-Invoke-WebRequest ($templateBaseUrl + "artifacts/monitoring/arc-inventory-workbook.json") -OutFile "$Env:ArcBoxDir\arc-inventory-workbook.json"
-Invoke-WebRequest ($templateBaseUrl + "artifacts/monitoring/arc-osperformance-workbook.json") -OutFile "$Env:ArcBoxDir\arc-osperformance-workbook.json"
-Invoke-WebRequest ($templateBaseUrl + "artifacts/LogInstructions.txt") -OutFile $Env:ArcBoxLogsDir\LogInstructions.txt
-Invoke-WebRequest ($templateBaseUrl + "artifacts/dsc/common.dsc.yml") -OutFile $Env:ArcBoxDscDir\common.dsc.yml
-Invoke-WebRequest ($templateBaseUrl + "artifacts/WinGet.ps1") -OutFile (Join-Path $work 'WinGet.ps1')
-Copy-Item -LiteralPath $hostHelper -Destination (Join-Path $work 'ArcBox.Host.ps1')
-Invoke-WebRequest ($templateBaseUrl + "artifacts/squid.conf") -OutFile $Env:ArcBoxDir\squid.conf
-Invoke-WebRequest ($templateBaseUrl + "artifacts/whitelist.txt") -OutFile $Env:ArcBoxDir\whitelist.txt
-Invoke-WebRequest ($templateBaseUrl + "artifacts/ct.txt") -OutFile $Env:ArcBoxDir\ct.txt
+Invoke-ArcBoxOperation artifacts 'Download lab wallpaper' 'arcbox_wallpaper_dark.png' {
+    Invoke-WebRequest 'https://raw.githubusercontent.com/azure/arc_jumpstart_docs/main/img/wallpaper/arcbox_wallpaper_dark.png' -OutFile $Env:ArcBoxDir\wallpaper.png
+}
+Save-ArcBoxBootstrapArtifact 'MonitorWorkbookLogonScript.ps1' (Join-Path $work 'MonitorWorkbookLogonScript.ps1')
+Save-ArcBoxBootstrapArtifact 'mgmtMonitorWorkbook.parameters.json' "$Env:ArcBoxDir\mgmtMonitorWorkbook.parameters.json"
+Save-ArcBoxBootstrapArtifact 'monitoring/arc-inventory-workbook.json' "$Env:ArcBoxDir\arc-inventory-workbook.json"
+Save-ArcBoxBootstrapArtifact 'monitoring/arc-osperformance-workbook.json' "$Env:ArcBoxDir\arc-osperformance-workbook.json"
+Save-ArcBoxBootstrapArtifact 'LogInstructions.txt' "$Env:ArcBoxLogsDir\LogInstructions.txt"
+Save-ArcBoxBootstrapArtifact 'dsc/common.dsc.yml' "$Env:ArcBoxDscDir\common.dsc.yml"
+Save-ArcBoxBootstrapArtifact 'WinGet.ps1' (Join-Path $work 'WinGet.ps1')
+Invoke-ArcBoxOperation artifacts 'Stage worker helper' 'ArcBox.Host.ps1' {
+    Copy-Item -LiteralPath $hostHelper -Destination (Join-Path $work 'ArcBox.Host.ps1')
+}
+Save-ArcBoxBootstrapArtifact 'squid.conf' "$Env:ArcBoxDir\squid.conf"
+Save-ArcBoxBootstrapArtifact 'whitelist.txt' "$Env:ArcBoxDir\whitelist.txt"
+Save-ArcBoxBootstrapArtifact 'ct.txt' "$Env:ArcBoxDir\ct.txt"
 
 # Workbook template
-Invoke-WebRequest ($templateBaseUrl + "artifacts/mgmtMonitorWorkbookITPro.json") -OutFile $Env:ArcBoxDir\mgmtMonitorWorkbook.json
+Save-ArcBoxBootstrapArtifact 'mgmtMonitorWorkbookITPro.json' "$Env:ArcBoxDir\mgmtMonitorWorkbook.json"
 
 Write-Host "Fetching Artifacts"
-Invoke-WebRequest ($templateBaseUrl + "artifacts/installArcAgent.ps1") -OutFile $Env:ArcBoxDir\agentScript\installArcAgent.ps1
-Invoke-WebRequest ($templateBaseUrl + "artifacts/installArcAgentUbuntu.sh") -OutFile $Env:ArcBoxDir\agentScript\installArcAgentUbuntu.sh
-Invoke-WebRequest ($templateBaseUrl + "artifacts/testDefenderForServers.cmd") -OutFile $Env:ArcBoxDir\agentScript\testDefenderForServers.cmd
-Invoke-WebRequest ($templateBaseUrl + "artifacts/InstallArcSQLExtensionAtScale.ps1") -OutFile $Env:ArcBoxDir\InstallArcSQLExtensionAtScale.ps1
-Invoke-WebRequest ($templateBaseUrl + "artifacts/AdventureWorksLT2019.bak") -OutFile "$Env:ArcBoxDir\AdventureWorksLT2019.bak"
-Invoke-WebRequest ($templateBaseUrl + "artifacts/dsc/itpro.dsc.yml") -OutFile $Env:ArcBoxDscDir\itpro.dsc.yml
-Invoke-WebRequest ($templateBaseUrl + "artifacts/dsc/virtual_machines_itpro.dsc.yml") -OutFile $Env:ArcBoxDscDir\virtual_machines_itpro.dsc.yml
+Save-ArcBoxBootstrapArtifact 'installArcAgent.ps1' "$Env:ArcBoxDir\agentScript\installArcAgent.ps1"
+Save-ArcBoxBootstrapArtifact 'installArcAgentUbuntu.sh' "$Env:ArcBoxDir\agentScript\installArcAgentUbuntu.sh"
+Save-ArcBoxBootstrapArtifact 'testDefenderForServers.cmd' "$Env:ArcBoxDir\agentScript\testDefenderForServers.cmd"
+Save-ArcBoxBootstrapArtifact 'InstallArcSQLExtensionAtScale.ps1' "$Env:ArcBoxDir\InstallArcSQLExtensionAtScale.ps1"
+Save-ArcBoxBootstrapArtifact 'AdventureWorksLT2019.bak' "$Env:ArcBoxDir\AdventureWorksLT2019.bak"
+Save-ArcBoxBootstrapArtifact 'dsc/itpro.dsc.yml' "$Env:ArcBoxDscDir\itpro.dsc.yml"
+Save-ArcBoxBootstrapArtifact 'dsc/virtual_machines_itpro.dsc.yml' "$Env:ArcBoxDscDir\virtual_machines_itpro.dsc.yml"
 Write-ArcBoxHostEvent artifacts ok
 
 $stage = 'features'
 $fallback = 'windows-features'
-# Disable Microsoft Edge sidebar
 $RegistryPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
-$Name = 'HubsSidebarEnabled'
-$Value = '00000000'
-# Create the key if it does not exist
-If (-NOT (Test-Path $RegistryPath)) {
-    New-Item -Path $RegistryPath -Force | Out-Null
+if (-not (Test-Path -LiteralPath $RegistryPath)) {
+    Invoke-ArcBoxOperation features 'Create browser policy key' 'Microsoft Edge' {
+        New-Item -Path $RegistryPath -Force | Out-Null
+    }
 }
-New-ItemProperty -Path $RegistryPath -Name $Name -Value $Value -PropertyType DWORD -Force
-
-# Disable Microsoft Edge first-run Welcome screen
-$RegistryPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
-$Name = 'HideFirstRunExperience'
-$Value = '00000001'
-# Create the key if it does not exist
-If (-NOT (Test-Path $RegistryPath)) {
-    New-Item -Path $RegistryPath -Force | Out-Null
+Invoke-ArcBoxOperation features 'Disable browser sidebar' 'Microsoft Edge' {
+    New-ItemProperty -Path $RegistryPath -Name HubsSidebarEnabled -Value '00000000' -PropertyType DWORD -Force | Out-Null
 }
-New-ItemProperty -Path $RegistryPath -Name $Name -Value $Value -PropertyType DWORD -Force
-
-# Disabling Windows Server Manager Scheduled Task
-Get-ScheduledTask -TaskName ServerManager -ErrorAction SilentlyContinue | Disable-ScheduledTask | Out-Null
+Invoke-ArcBoxOperation features 'Hide browser first-run experience' 'Microsoft Edge' {
+    New-ItemProperty -Path $RegistryPath -Name HideFirstRunExperience -Value '00000001' -PropertyType DWORD -Force | Out-Null
+}
+$serverManagerTask = Get-ScheduledTask -TaskName ServerManager -ErrorAction SilentlyContinue
+if ($serverManagerTask) {
+    Invoke-ArcBoxOperation tasks 'Disable scheduled task' 'ServerManager' {
+        $serverManagerTask | Disable-ScheduledTask | Out-Null
+    }
+}
 
 Write-Header "Installing Hyper-V"
 Write-ArcBoxHostEvent features start
-Enable-WindowsOptionalFeature -Online -FeatureName Containers -All -NoRestart
-Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -NoRestart
-if (-not (Install-WindowsFeature -Name Hyper-V -IncludeAllSubFeature -IncludeManagementTools).Success) {
-    throw 'Hyper-V feature installation failed.'
+Invoke-ArcBoxOperation features 'Enable Windows optional feature' 'Containers' {
+    Enable-WindowsOptionalFeature -Online -FeatureName Containers -All -NoRestart
+}
+Invoke-ArcBoxOperation features 'Enable Windows optional feature' 'VirtualMachinePlatform' {
+    Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -NoRestart
+}
+Invoke-ArcBoxOperation features 'Install Windows feature' 'Hyper-V' {
+    if (-not (Install-WindowsFeature -Name Hyper-V -IncludeAllSubFeature -IncludeManagementTools).Success) {
+        throw 'Hyper-V feature installation failed.'
+    }
 }
 Write-ArcBoxHostEvent features ok
 
@@ -317,14 +355,18 @@ Write-ArcBoxHostEvent tasks start
 $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
 $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 4)
 $action = New-ScheduledTaskAction -Execute $pwsh -Argument (Get-ArcBoxStartupArguments $work) -WorkingDirectory $work
-Register-ScheduledTask -TaskName 'ArcBox-PostReboot' -TaskPath '\' -Principal $principal -Settings $settings `
-    -Trigger (New-ScheduledTaskTrigger -AtStartup) -Action $action -ErrorAction Stop | Out-Null
+Invoke-ArcBoxOperation tasks 'Register startup task' 'ArcBox-PostReboot' {
+    Register-ScheduledTask -TaskName 'ArcBox-PostReboot' -TaskPath '\' -Principal $principal -Settings $settings `
+        -Trigger (New-ScheduledTaskTrigger -AtStartup) -Action $action -ErrorAction Stop | Out-Null
+}
 # Presentation only; this logon task cannot provision or determine readiness.
 $labUser = "$env:COMPUTERNAME\$adminUsername"
 $desktop = New-ScheduledTaskAction -Execute $pwsh -Argument '-NoProfile -NonInteractive -Command "Import-Module Azure.Arc.Jumpstart.Common -ErrorAction Stop; Set-JSDesktopBackground -ImagePath C:\ArcBox\wallpaper.bmp"'
-Register-ScheduledTask -TaskName 'ArcBox-Presentation' -TaskPath '\' `
-    -Principal (New-ScheduledTaskPrincipal -UserId $labUser -LogonType Interactive) `
-    -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $labUser) -Action $desktop -ErrorAction Stop | Out-Null
+Invoke-ArcBoxOperation tasks 'Register student presentation task' 'ArcBox-Presentation' {
+    Register-ScheduledTask -TaskName 'ArcBox-Presentation' -TaskPath '\' `
+        -Principal (New-ScheduledTaskPrincipal -UserId $labUser -LogonType Interactive) `
+        -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $labUser) -Action $desktop -ErrorAction Stop | Out-Null
+}
 Write-ArcBoxJournal tasks INFO 'Student presentation task registered. It has not run; it waits for student sign-in and is not part of unattended readiness.'
 Write-ArcBoxHostEvent tasks ok
 
@@ -336,8 +378,12 @@ $reboot = New-ScheduledTaskTrigger -Once -At $rebootAt
 $reboot.EndBoundary = $rebootAt.AddMinutes(5).ToString('s')
 $rebootSettings = New-ScheduledTaskSettingsSet -DeleteExpiredTaskAfter (New-TimeSpan -Minutes 1)
 $rebootAction = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\shutdown.exe" -Argument '/r /t 0'
-Set-Content -LiteralPath $bootMarker -Value $clientBoot -Encoding ASCII
-Register-ScheduledTask -TaskName 'ArcBoxClientReboot' -TaskPath '\' -User SYSTEM -RunLevel Highest -Trigger $reboot -Action $rebootAction -Settings $rebootSettings -Force | Out-Null
+Invoke-ArcBoxOperation reboot 'Save prepared boot checkpoint' 'PreparedOnBoot.txt' {
+    Set-Content -LiteralPath $bootMarker -Value $clientBoot -Encoding ASCII
+}
+Invoke-ArcBoxOperation reboot 'Schedule client reboot' 'ArcBoxClientReboot' {
+    Register-ScheduledTask -TaskName 'ArcBoxClientReboot' -TaskPath '\' -User SYSTEM -RunLevel Highest -Trigger $reboot -Action $rebootAction -Settings $rebootSettings -Force | Out-Null
+}
 Write-ArcBoxHostEvent reboot requested
 Write-ArcBoxHostEvent bootstrap ok
 } catch {
@@ -352,7 +398,7 @@ Write-ArcBoxHostEvent bootstrap ok
         Set-Content -LiteralPath (Join-Path $Env:ArcBoxLogsDir "Bootstrap-error-$attempt.log") -Value $detail -ErrorAction Stop
     } catch { Write-Warning 'Bootstrap failure receipt could not be written; check the administrator log and extension output.' -WarningAction Continue }
     if ($stage -eq 'disk') {
-        Write-ArcBoxJournal bootstrap INFO 'After the disk failure, OS expansion, PowerShell installation, Hyper-V reboot and the SYSTEM worker were not reached in this attempt.'
+        Write-ArcBoxJournal bootstrap INFO 'The lab data disk did not verify. Hyper-V reboot and the SYSTEM worker were not reached in this attempt.'
     }
     if ($stage -eq 'os-volume') { $stage = 'features' }
     Write-ArcBoxHostEvent $stage failed $reason -LegacyOnly:$profileLoadFailed
