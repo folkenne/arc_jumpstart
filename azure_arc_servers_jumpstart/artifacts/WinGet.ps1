@@ -78,6 +78,10 @@ try {
                 Import-ArcBoxProvisioningModule $pin $manifest $moduleRoot
             } -Version $pin.version -Repository 'Verified machine modules'
         }
+        # Keep Az imports isolated above; nested setup also uses the inbox Windows modules.
+        $windowsModules = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules'
+        $env:PSModulePath += ';' + $windowsModules
+        Import-Module -Name (Join-Path $windowsModules 'DhcpServer\DhcpServer.psd1') -SkipEditionCheck -ErrorAction Stop
         Assert-ArcBoxPrivateScript $privateScript $pins['ArcServersLogonScript.ps1'].Sha256
         Assert-ArcBoxPrivateScript $sqlHelper $pins['testDefenderForSQL.ps1'].Sha256
         Assert-ArcBoxPrivateScript $sqlModule $pins['SqlAdvancedThreatProtectionShell.psm1'].Sha256
