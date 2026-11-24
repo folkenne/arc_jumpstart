@@ -354,10 +354,10 @@ $fallback = 'task-register'
 Write-ArcBoxHostEvent tasks start
 $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
 $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 4)
-$action = New-ScheduledTaskAction -Execute $pwsh -Argument (Get-ArcBoxStartupArguments $work) -WorkingDirectory $work
+$startupAction = New-ScheduledTaskAction -Execute $pwsh -Argument (Get-ArcBoxStartupArguments $work) -WorkingDirectory $work
 Invoke-ArcBoxOperation tasks 'Register startup task' 'ArcBox-PostReboot' {
     Register-ScheduledTask -TaskName 'ArcBox-PostReboot' -TaskPath '\' -Principal $principal -Settings $settings `
-        -Trigger (New-ScheduledTaskTrigger -AtStartup) -Action $action -ErrorAction Stop | Out-Null
+        -Trigger (New-ScheduledTaskTrigger -AtStartup) -Action $startupAction -ErrorAction Stop | Out-Null
 }
 # Presentation only; this logon task cannot provision or determine readiness.
 $labUser = "$env:COMPUTERNAME\$adminUsername"
