@@ -400,7 +400,7 @@ try {
     az connectedmachine extension create --name AzureMonitorLinuxAgent --publisher Microsoft.Azure.Monitor --type AzureMonitorLinuxAgent --machine-name $Ubuntu01vmName --resource-group $resourceGroup --location $azureLocation --enable-auto-upgrade true --no-wait
 
     Write-Host "Installing the Change Tracking agent on Windows"
-    az connectedmachine extension create --name ChangeTracking-Windows --publisher Microsoft.Azure.ChangeTrackingAndInventory --type-handler-version 2.20 --type ChangeTracking-Windows --machine-name $Win2k25vmName --resource-group $resourceGroup --location $azureLocation --enable-auto-upgrade --no-wait
+    az connectedmachine extension create --name ChangeTracking-Windows --publisher Microsoft.Azure.ChangeTrackingAndInventory --type-handler-version 2.42 --type ChangeTracking-Windows --machine-name $Win2k25vmName --resource-group $resourceGroup --location $azureLocation --enable-auto-upgrade --no-wait
 
     Write-Host "Initializing the Azure Update Manager agents"
     az connectedmachine assess-patches --resource-group $resourceGroup --name $Win2k25vmName --no-wait

@@ -721,7 +721,7 @@ function Get-ArcBoxScriptPins {
     [ordered]@{
         'ArcServersLogonScript.ps1' = @{
             Uri = "${TemplateBaseUrl}artifacts/ArcServersLogonScript.ps1"
-            Sha256 = 'bd56a176052730ec53778056a4b25f84b0c842d86f7c4551c0295d795e76fb27'
+            Sha256 = '4f52a8e52a27f521d6feb6ff58e489dd176e3eccd24b767e69d6c0fd745707cf'
         }
         'ArcBox.Linux.ps1' = @{
             Uri = "${TemplateBaseUrl}artifacts/ArcBox.Linux.ps1"
