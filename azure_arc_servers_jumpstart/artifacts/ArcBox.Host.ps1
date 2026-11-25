@@ -858,12 +858,12 @@ function Start-ArcBoxHostBaseline {
             -OutFile $scriptPath -MaximumRedirection 0 -TimeoutSec 30 -ErrorAction Stop
     }
     [IO.File]::WriteAllText("$dir\deadline.txt", [datetimeoffset]::UtcNow.AddHours(12).ToString('o'))
-    $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+    $taskAction = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
         -Argument "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$scriptPath`" -Attempt $Attempt"
     $principal = New-ScheduledTaskPrincipal -UserId SYSTEM -LogonType ServiceAccount -RunLevel Highest
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([timespan]::FromHours(12))
     Invoke-ArcBoxOperation performance 'Register startup task' 'ArcBox-HostBaseline' {
-        Register-ScheduledTask -TaskName 'ArcBox-HostBaseline' -TaskPath '\' -Action $action -Trigger (New-ScheduledTaskTrigger -AtStartup) `
+        Register-ScheduledTask -TaskName 'ArcBox-HostBaseline' -TaskPath '\' -Action $taskAction -Trigger (New-ScheduledTaskTrigger -AtStartup) `
             -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
     }
     Invoke-ArcBoxOperation performance 'Request task start' 'ArcBox-HostBaseline' {
