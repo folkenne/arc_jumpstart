@@ -336,6 +336,46 @@ function Get-ArcBoxConnectOutputFilter {
     }
 }
 
+function Send-ArcBoxLinuxFile {
+    param(
+        [Parameter(Mandatory)][System.Management.Automation.Runspaces.PSSession]$Session,
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Destination,
+        [Parameter(Mandatory)][ValidateSet('0600','0644')][string]$Mode
+    )
+
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    $encoded = [Convert]::ToBase64String($bytes)
+    $expectedHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes))
+    Invoke-Command -Session $Session -ErrorAction Stop -ArgumentList $encoded,$expectedHash,$Destination,$Mode -ScriptBlock {
+        param($Encoded, $ExpectedHash, $Destination, $Mode)
+        $ErrorActionPreference = 'Stop'
+        $PSNativeCommandUseErrorActionPreference = $true
+
+        $stage = mktemp -d
+        try {
+            $source = Join-Path $stage 'payload'
+            [IO.File]::WriteAllBytes($source, [Convert]::FromBase64String($Encoded))
+            if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ine $ExpectedHash) {
+                throw 'Linux staging payload failed its SHA-256 check.'
+            }
+
+            # Keep executable scripts and pending configuration in a root-owned directory.
+            if ($Destination.StartsWith('/var/lib/arcbox-provisioning/', [StringComparison]::Ordinal)) {
+                sudo -n install -d -o root -g root -m 0700 '/var/lib/arcbox-provisioning'
+            }
+            sudo -n install -o root -g root -m $Mode -- $source $Destination
+            $installed = sudo -n sha256sum -- $Destination
+            if (($installed -split '\s+', 2)[0] -ine $ExpectedHash) {
+                throw 'Installed Linux payload failed its SHA-256 check.'
+            }
+        } finally {
+            Remove-Item -LiteralPath (Join-Path $stage 'payload') -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $stage -Force -ErrorAction Stop
+        }
+    }
+}
+
 function Get-ArcBoxUbuntuInstallerCommand {
     {
         param($Token, $Group, $Tenant, $Location, $Subscription, $FilterSource)
@@ -344,7 +384,7 @@ function Get-ArcBoxUbuntuInstallerCommand {
         $previousExit = $global:LASTEXITCODE
         try {
             $global:LASTEXITCODE = $null
-            $output = @($Token | sudo -n sh /var/tmp/arcbox-install-agent.sh $Group $Tenant $Location $Subscription 2>&1)
+            $output = @($Token | sudo -n sh /var/lib/arcbox-provisioning/arcbox-install-agent.sh $Group $Tenant $Location $Subscription 2>&1)
             $code = $global:LASTEXITCODE
         } finally { $global:LASTEXITCODE = $previousExit }
         if ($code -isnot [int]) { return }
@@ -681,7 +721,15 @@ function Get-ArcBoxScriptPins {
     [ordered]@{
         'ArcServersLogonScript.ps1' = @{
             Uri = "${TemplateBaseUrl}artifacts/ArcServersLogonScript.ps1"
-            Sha256 = '474b17b717a91f823765bf99f2dfc2b052e6a8aea9568975587296c696622cef'
+            Sha256 = 'bd56a176052730ec53778056a4b25f84b0c842d86f7c4551c0295d795e76fb27'
+        }
+        'ArcBox.Linux.ps1' = @{
+            Uri = "${TemplateBaseUrl}artifacts/ArcBox.Linux.ps1"
+            Sha256 = '88148f8bc9f520fe89b96df8f11492fbdaf8ad48ea64e9640ad3c526dcc726e0'
+        }
+        'ArcBox.LinuxSeed.sh' = @{
+            Uri = "${TemplateBaseUrl}artifacts/ArcBox.LinuxSeed.sh"
+            Sha256 = 'cddfc5e8ef619910179fe14b3ef5b4e91af2b7aff4f3f5c58fd2967904617ee2'
         }
         'testDefenderForSQL.ps1' = @{
             Uri = "${upstream}testDefenderForSQL.ps1"
@@ -1168,17 +1216,65 @@ function Test-ArcBoxSshListener {
 
 function Get-ArcBoxLinuxAddress {
     param([string]$Name, [ValidateRange(1,300)][int]$TimeoutSeconds = 180)
+    $lan = Get-NetIPAddress -InterfaceAlias 'vEthernet (InternalNATSwitch)' -AddressFamily IPv4 -IPAddress '10.10.1.1' -ErrorAction Stop
     $clock = [Diagnostics.Stopwatch]::StartNew()
+    $signal = 'unique guest KVP address missing'
     do {
-        $addresses = @(Get-VMNetworkAdapter -VMName $Name -ErrorAction Stop |
-            Where-Object SwitchName -eq 'InternalNATSwitch' |
-            ForEach-Object IPAddresses | Where-Object {
-                $_ -match '\A10\.10\.1\.(\d{1,3})\z' -and [int]$Matches[1] -in (2..254)
-            } | Sort-Object -Unique)
-        if ($addresses.Count -eq 1 -and (Test-ArcBoxSshListener $addresses[0])) { return $addresses[0] }
+        $adapter = @(Get-VMNetworkAdapter -VMName $Name -ErrorAction Stop)
+        if ($adapter.Count -ne 1 -or $adapter[0].SwitchName -cne 'InternalNATSwitch') {
+            Stop-ArcBoxHostStep guest-access "$Name is not on the expected workshop switch."
+        }
+        $addresses = @($adapter[0].IPAddresses | Where-Object { $_ -match '\A10\.10\.1\.(1[0-9]{2}|200)\z' })
+        if ($addresses.Count -eq 1) {
+            $ip = $addresses[0]
+            $lease = @(Get-DhcpServerv4Lease -IPAddress $ip -ErrorAction SilentlyContinue)
+            $signal = 'active DHCP lease missing'
+            if ($lease.Count -eq 1 -and $lease[0].AddressState -eq 'Active') {
+                $signal = 'TCP/22 not ready'
+                if (Test-ArcBoxSshListener $ip) {
+                    $signal = 'vSwitch neighbor MAC not matched'
+                    # A Linux DHCP client ID can contain a DUID rather than the NIC MAC.
+                    $neighbor = @(Get-NetNeighbor -InterfaceIndex $lan.InterfaceIndex -IPAddress $ip -AddressFamily IPv4 -ErrorAction SilentlyContinue)
+                    if ($neighbor.Count -eq 1 -and $neighbor[0].State -in 'Reachable','Stale','Delay','Probe' -and
+                        ($neighbor[0].LinkLayerAddress -replace '[:-]','') -ieq $adapter[0].MacAddress) { return $ip }
+                }
+            }
+        }
         if ($clock.Elapsed.TotalSeconds -lt $TimeoutSeconds) { Start-Sleep -Seconds 3 }
     } while ($clock.Elapsed.TotalSeconds -lt $TimeoutSeconds)
-    Stop-ArcBoxHostStep guest-access "$Name did not have a unique reachable IPv4 address on the workshop switch."
+    Stop-ArcBoxHostStep guest-access "$Name is not SSH-ready: $signal."
+}
+
+function New-ArcBoxLinuxSshOptions {
+    param([string]$Name, [string]$Address, [string]$PrivateKey)
+    $dir = Split-Path -Parent $PrivateKey
+    $proof = Get-Content -LiteralPath (Join-Path $dir "$Name.offline.json") -Raw | ConvertFrom-Json
+    $disk = @(Get-VMHardDiskDrive -VMName $Name)
+    if ($disk.Count -ne 1 -or $disk[0].Path -ine $proof.Disk -or (Get-VHD -Path $disk[0].Path).ParentPath -ine $proof.Parent -or
+        $proof.Instance -cnotmatch '\Aarcbox-[a-f0-9]{32}\z' -or $proof.HostKey -cnotmatch '\Assh-ed25519 [A-Za-z0-9+/]{60,100}={0,2}\z') {
+        Stop-ArcBoxHostStep guest-access "No exact offline disk and SSH key binding for $Name."
+    }
+    $pin = Join-Path $dir "$Name-known_hosts"
+    $empty = Join-Path $dir 'empty-ssh-config'
+    [IO.File]::WriteAllText($pin, "$Address $($proof.HostKey)`n", [Text.Encoding]::ASCII)
+    $options = @{
+        StrictHostKeyChecking = 'yes'; UserKnownHostsFile = $pin; GlobalKnownHostsFile = $empty
+        HostKeyAlgorithms = 'ssh-ed25519'; IdentitiesOnly = 'yes'; BatchMode = 'yes'
+        UpdateHostKeys = 'no'; ConnectTimeout = '10'; PasswordAuthentication = 'no'
+    }
+    $argsList = @('-F', $empty, '-i', $PrivateKey) + @(foreach ($option in $options.GetEnumerator()) {
+        '-o'; "$($option.Key)=$($option.Value)"
+    })
+    $ssh = Join-Path $env:SystemRoot 'System32\OpenSSH\ssh.exe'
+    $verify = 'set -e; d=/var/lib/arcbox-provisioning; n=$(sudo -n stat -c %s $d/authorized_keys.before); if test $n -gt 0; then sudo -n cmp -n "$n" ~/.ssh/authorized_keys $d/authorized_keys.before; fi; sudo -n cat $d/instance-id'
+    $observed = & $ssh @argsList "jumpstart@$Address" $verify
+    if ($LASTEXITCODE -ne 0 -or $observed -cne $proof.Instance) {
+        Stop-ArcBoxHostStep guest-access "First strict SSH did not confirm the installed key and host identity for $Name."
+    }
+    $imds = 'curl --noproxy ''*'' -sS --connect-timeout 3 --max-time 5 -H Metadata:true http://169.254.169.254/metadata/instance?api-version=2021-02-01 -o /dev/null 2>/dev/null; code=$?; test $code -eq 7 || test $code -eq 28'
+    & $ssh @argsList "jumpstart@$Address" $imds
+    if ($LASTEXITCODE -ne 0) { Stop-ArcBoxHostStep guest-access "IMDS isolation was not proved for $Name." }
+    $options
 }
 
 function Wait-ArcBoxBaselineRegistration {
@@ -1235,28 +1331,26 @@ function Invoke-ArcBoxAz {
 }
 
 function Receive-ArcBoxVhd {
-    param([string]$Path, [string]$SourceUri, [string]$CopyFrom, [string]$AzCopy)
+    param([string]$Path, [string]$SourceUri, [string]$AzCopy,
+        [ValidatePattern('\A[0-9a-f]{64}\z')][string]$ExpectedSha256)
     if (Test-Path -LiteralPath $Path) {
         if (-not (Test-VHD -Path $Path -ErrorAction Stop)) { throw 'Existing workshop VHDX failed validation; it was not overwritten.' }
+        if ($ExpectedSha256 -and (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash -ine $ExpectedSha256) {
+            throw "Existing workshop image does not match the tested SHA-256: $(Split-Path -Leaf $Path)."
+        }
         return
     }
 
     $pending = "$Path.$([guid]::NewGuid().ToString('N')).pending.vhdx"
     try {
-        if ($CopyFrom) {
-            # Never use an attached, potentially already personalized Ubuntu disk as a new proxy image.
-            if ((Get-VHD -Path $CopyFrom -ErrorAction Stop).Attached -ne $false -or
-                (Get-VM -Name 'ArcBox-Ubuntu-02' -ErrorAction SilentlyContinue)) {
-                throw 'No pristine Ubuntu-02 disk is available for the missing Proxy disk.'
-            }
-            Copy-Item -LiteralPath $CopyFrom -Destination $pending -ErrorAction Stop
-        } else {
-            & $AzCopy copy $SourceUri $pending --overwrite=false --check-length=true --log-level=ERROR
-            if ($LASTEXITCODE -ne 0) { throw "VHDX download returned $LASTEXITCODE." }
-        }
+        & $AzCopy copy $SourceUri $pending --overwrite=false --check-length=true --log-level=ERROR
+        if ($LASTEXITCODE -ne 0) { throw "VHDX download returned $LASTEXITCODE." }
         if (-not (Test-Path -LiteralPath $pending -PathType Leaf) -or
             -not (Test-VHD -Path $pending -ErrorAction Stop)) {
             throw 'The staged VHDX did not pass Hyper-V validation.'
+        }
+        if ($ExpectedSha256 -and (Get-FileHash -LiteralPath $pending -Algorithm SHA256 -ErrorAction Stop).Hash -ine $ExpectedSha256) {
+            throw "Staged workshop image does not match the tested SHA-256: $(Split-Path -Leaf $Path)."
         }
         # File.Move refuses an existing destination, including one created during staging.
         [IO.File]::Move($pending, $Path)

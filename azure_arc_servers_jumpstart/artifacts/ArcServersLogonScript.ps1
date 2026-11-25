@@ -137,13 +137,12 @@ $Win2k22vmName = "ArcBox-Win2K22"
 $Win2k22vmvhdPath = "${Env:ArcBoxVMDir}\VBD-ArcBox-Win2K22.vhdx"
 
 $Ubuntu01vmName = "ArcBox-Ubuntu-01"
-$Ubuntu01vmvhdPath = "${Env:ArcBoxVMDir}\VBD-ArcBox-Ubuntu-01.vhdx"
-
 $Ubuntu02vmName = "ArcBox-Ubuntu-02"
-$Ubuntu02vmvhdPath = "${Env:ArcBoxVMDir}\VBD-ArcBox-Ubuntu-02.vhdx"
-
 $ProxyvmName = "ArcBox-Proxy"
-$ProxyvmvhdPath = "${Env:ArcBoxVMDir}\VBD-ArcBox-Proxy.vhdx"
+$linuxGuests = @($Ubuntu01vmName, $Ubuntu02vmName, $ProxyvmName)
+$linuxParents = Join-Path $Env:ArcBoxVMDir 'ArcBoxLinuxImages'
+$null = New-Item -Path $linuxParents -ItemType Directory
+Protect-ArcBoxDirectory $linuxParents
 
 # The script reads credentials later; do not broaden its artifact publication scope.
 $Env:AZCOPY_BUFFER_GB = 8
@@ -152,17 +151,47 @@ $images = [ordered]@{
     $SQLvmvhdPath = $vhdImageToDownload
     $win2k25vmvhdPath = 'VBD-ArcBox-Win2K25.vhdx'
     $Win2k22vmvhdPath = 'VBD-ArcBox-Win2K22.vhdx'
-    $Ubuntu01vmvhdPath = 'VBD-ArcBox-Ubuntu-01.vhdx'
-    $Ubuntu02vmvhdPath = 'VBD-ArcBox-Ubuntu-02.vhdx'
+    (Join-Path $linuxParents 'VBD-ArcBox-Ubuntu-01.vhdx') = 'VBD-ArcBox-Ubuntu-01.vhdx'
+    (Join-Path $linuxParents 'VBD-ArcBox-Ubuntu-02.vhdx') = 'VBD-ArcBox-Ubuntu-02.vhdx'
+}
+$linuxImageSha256 = @{
+    'VBD-ArcBox-Ubuntu-01.vhdx' = 'aeab00bd3879a63e82229f7601a9edc2216b3a7cefee032d547106927fe1a2d1'
+    'VBD-ArcBox-Ubuntu-02.vhdx' = '15ed06dc85e58068ea14a460652bf9bd88cfbead0fed9815d2c5217d02cf475f'
 }
 foreach ($image in $images.GetEnumerator()) {
-    Receive-ArcBoxVhd -Path $image.Key -SourceUri ($vhdSourceFolder + $image.Value) -AzCopy $azcopy
+    $verification = @{}
+    if ($linuxImageSha256.ContainsKey($image.Value)) { $verification.ExpectedSha256 = $linuxImageSha256[$image.Value] }
+    Receive-ArcBoxVhd -Path $image.Key -SourceUri ($vhdSourceFolder + $image.Value) -AzCopy $azcopy @verification
 }
-Receive-ArcBoxVhd -Path $ProxyvmvhdPath -CopyFrom $Ubuntu02vmvhdPath
-
-# Create the nested VMs if not already created
 Write-Header "Create Hyper-V VMs"
+$sshDir = Join-Path 'C:\ProgramData' ('ArcBoxLinux-' + (Split-Path -Leaf $PSScriptRoot))
+$null = New-Item -Path $sshDir -ItemType Directory
+Protect-ArcBoxDirectory $sshDir
+$privateKey = Join-Path $sshDir 'id_ed25519'
+$keygen = Join-Path $env:SystemRoot 'System32\OpenSSH\ssh-keygen.exe'
+& $keygen -q -t ed25519 -N '' -f $privateKey
+if ($LASTEXITCODE -ne 0) { throw 'Could not generate the protected Linux worker key.' }
+[IO.File]::WriteAllText((Join-Path $sshDir 'empty-ssh-config'), '', [Text.Encoding]::ASCII)
+$artifactBase = [Environment]::GetEnvironmentVariable('templateBaseUrl','Machine')
+foreach ($asset in 'ArcBox.Linux.ps1','ArcBox.LinuxSeed.sh') {
+    Receive-ArcBoxPinnedScript $artifactBase $asset (Join-Path $PSScriptRoot $asset)
+}
+$windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+& $windowsPowerShell -NoLogo -NoProfile -NonInteractive -File (Join-Path $PSScriptRoot 'ArcBox.Linux.ps1') `
+    -VMRoot $Env:ArcBoxVMDir -SshDir $sshDir
+if ($LASTEXITCODE -ne 0) { throw 'Offline Linux disk preparation failed.' }
 Initialize-ArcBoxGuests -Root $Env:ArcBoxVMDir
+foreach ($name in $linuxGuests) {
+    Add-VMNetworkAdapterAcl -VMName $name -RemoteIPAddress '169.254.169.254/32' -Direction Outbound -Action Deny
+    $acl = @(Get-VMNetworkAdapterAcl -VMName $name | Where-Object {
+        [string]$_.Direction -eq 'Outbound' -and [string]$_.Action -eq 'Deny' -and $_.RemoteAddress -eq '169.254.169.254'
+    })
+    if ($acl.Count -ne 1) { throw "Missing IMDS isolation before starting $name." }
+}
+if ((Invoke-WebRequest -Uri 'http://169.254.169.254/metadata/instance?api-version=2021-02-01' `
+    -Headers @{ Metadata = 'true' } -NoProxy -MaximumRedirection 0 -TimeoutSec 5).StatusCode -ne 200) {
+    throw 'Host IMDS positive control failed.'
+}
 
 Write-Host "Starting VMs"
 Get-VM -Name @($Win2k25vmName, $Win2k22vmName, $Ubuntu01vmName, $Ubuntu02vmName, $SQLvmName, $ProxyvmName) |
@@ -191,6 +220,9 @@ try {
     if (@(@($Ubuntu01VmIp, $Ubuntu02VmIp, $ProxyVmIp) | Sort-Object -Unique).Count -ne 3) {
         throw 'Ubuntu and Proxy addresses are not distinct.'
     }
+    $ubuntu01Ssh = New-ArcBoxLinuxSshOptions -Name $Ubuntu01vmName -Address $Ubuntu01VmIp -PrivateKey $privateKey
+    $ubuntu02Ssh = New-ArcBoxLinuxSshOptions -Name $Ubuntu02vmName -Address $Ubuntu02VmIp -PrivateKey $privateKey
+    $proxySsh = New-ArcBoxLinuxSshOptions -Name $ProxyvmName -Address $ProxyVmIp -PrivateKey $privateKey
     Write-ArcBoxHostEvent guest-access ok
 } catch {
     Write-ArcBoxHostEvent guest-access failed guest-access
@@ -200,28 +232,6 @@ try {
 #Reserve IP address for proxy so it does not change
 Get-DhcpServerv4Lease -IPAddress $ProxyVmIp| Add-DhcpServerv4Reservation
 
-# Configuring SSH for accessing Linux VMs
-Write-Output "Generating SSH key for accessing nested Linux VMs"
-
-$sshDir = (New-Item -Path (Join-Path $PSScriptRoot 'ssh') -ItemType Directory -Force).FullName
-$privateKey = Join-Path $sshDir 'id_rsa'
-if (-not (Test-Path -LiteralPath $privateKey -PathType Leaf)) {
-    ssh-keygen -q -t rsa -N '' -f $privateKey
-}
-$sshOptions = @{ StrictHostKeyChecking = 'accept-new'; ConnectTimeout = '10'; BatchMode = 'yes' }
-$keyCopy = @{
-    SourcePath = "$privateKey.pub"
-    DestinationPath = "/home/$nestedLinuxUsername/.ssh/authorized_keys"
-    FileSource = 'Host'
-    Force = $true
-    CreateFullPath = $true
-}
-$ubuntuGuests = Get-VM -Name @($Ubuntu01vmName, $Ubuntu02vmName)
-$ubuntuGuests | Copy-VMFile @keyCopy
-# Preserve upstream's second Ubuntu copy: the first guest-service copy can leave an empty file.
-$ubuntuGuests | Copy-VMFile @keyCopy
-Get-VM -Name $ProxyvmName | Copy-VMFile @keyCopy
-    
 # Copy installation script to nested Windows VMs
 Write-Output "Transferring installation script to nested Windows VMs..."
 Copy-VMFile $Win2k25vmName -SourcePath "$agentScript\installArcAgent.ps1" -DestinationPath "$Env:ArcBoxDir\installArcAgent.ps1" -CreateFullPath -FileSource Host -Force
@@ -248,27 +258,34 @@ Invoke-Command -VMName $SQLvmName -Credential $WindowsCredential -ErrorAction St
 
 
 
-# Only Ubuntu-01 gets the installer. No token is written into the lab-readable client directory.
-Copy-VMFile -VMName $Ubuntu01vmName -SourcePath "$agentScript\installArcAgentUbuntu.sh" `
-    -DestinationPath "/var/tmp/arcbox-install-agent.sh" -FileSource Host -Force
-
 #Installing Squid proxy on the Proxy VM
 Write-Output "Installing Squid proxy on the Proxy VM"
 
-$ProxySessions = New-PSSession -HostName $ProxyVmIp -KeyFilePath $privateKey -UserName $nestedLinuxUsername -Options $sshOptions
-Invoke-JSSudoCommand -Session $ProxySessions -Command 'sudo hostnamectl set-hostname "proxy"'
-Invoke-JSSudoCommand -Session $ProxySessions -Command "sudo apt-get update"
-Invoke-JSSudoCommand -Session $ProxySessions -Command "sudo apt-get install squid -y"
-#Copy the squid config file to the proxy vm
-Invoke-JSSudoCommand -Session $ProxySessions -Command "sudo cp /etc/squid/squid.conf /etc/squid/squid.conf.default"
-Copy-VMFile -VMName $ProxyvmName -SourcePath "$Env:ArcBoxDir\whitelist.txt" -DestinationPath '/etc/squid/whitelist.txt' -FileSource Host -Force -ErrorAction Stop
-Copy-VMFile -VMName $ProxyvmName -SourcePath "$Env:ArcBoxDir\squid.conf" -DestinationPath '/etc/squid/squid.conf' -FileSource Host -Force -ErrorAction Stop
+$ProxySessions = New-PSSession -HostName $ProxyVmIp -KeyFilePath $privateKey -UserName $nestedLinuxUsername -Options $proxySsh
 # Load the baseline allowlist; the student still adds the Gateway URL and restarts Squid.
 Write-ArcBoxHostEvent proxy start
 try {
     Invoke-Command -Session $ProxySessions -ErrorAction Stop -ScriptBlock {
-        sudo -n squid -k parse
-        if ($LASTEXITCODE -ne 0) { throw 'Squid rejected the baseline configuration.' }
+        $PSNativeCommandUseErrorActionPreference = $false
+        $null = sudo -n hostnamectl set-hostname proxy 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "Could not set the proxy hostname (exit $LASTEXITCODE)." }
+        $null = sudo -n apt-get -o Acquire::Retries=2 update 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "Proxy apt-get update failed (exit $LASTEXITCODE)." }
+        $null = sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install --yes squid 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "Squid package installation failed (exit $LASTEXITCODE)." }
+    }
+    Send-ArcBoxLinuxFile -Session $ProxySessions -Path "$Env:ArcBoxDir\whitelist.txt" -Destination '/etc/squid/whitelist.txt' -Mode '0644'
+    Send-ArcBoxLinuxFile -Session $ProxySessions -Path "$Env:ArcBoxDir\squid.conf" -Destination '/var/lib/arcbox-provisioning/squid.conf' -Mode '0600'
+    Invoke-Command -Session $ProxySessions -ErrorAction Stop -ScriptBlock {
+        $PSNativeCommandUseErrorActionPreference = $false
+        $null = sudo -n squid -f '/var/lib/arcbox-provisioning/squid.conf' -k parse 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "Squid rejected the staged baseline configuration (exit $LASTEXITCODE)." }
+        if (!(Test-Path -LiteralPath /etc/squid/squid.conf.default)) {
+            sudo -n cp -- /etc/squid/squid.conf /etc/squid/squid.conf.default
+            if ($LASTEXITCODE -ne 0) { throw "Squid could not preserve the default configuration (exit $LASTEXITCODE)." }
+        }
+        sudo -n install -m 0644 '/var/lib/arcbox-provisioning/squid.conf' /etc/squid/squid.conf
+        if ($LASTEXITCODE -ne 0) { throw 'Squid could not install the verified configuration.' }
         sudo -n systemctl reload squid
         if ($LASTEXITCODE -ne 0) { throw 'Squid could not reload the baseline configuration.' }
         sudo -n systemctl is-active --quiet squid
@@ -284,7 +301,7 @@ try {
 #Install net-tools for ifconfig usage and python 3.10 for hybrid worker on Ubuntu-01 and Ubuntu-02
 Write-ArcBoxJournal guest-access INFO 'Opening the Ubuntu-01 SSH session; the Arc installer has not been requested.'
 try {
-    $Ubuntu1Session = New-PSSession -HostName $Ubuntu01VmIp -KeyFilePath $privateKey -UserName $nestedLinuxUsername -Options $sshOptions -ErrorAction Stop
+    $Ubuntu1Session = New-PSSession -HostName $Ubuntu01VmIp -KeyFilePath $privateKey -UserName $nestedLinuxUsername -Options $ubuntu01Ssh -ErrorAction Stop
 } catch {
     Write-ArcBoxJournal guest-access ERROR 'Ubuntu-01 SSH did not open. The Arc installer was not invoked; check VM readiness, its address and SSH service.' `
         -Failure $_ -Operation 'Open Ubuntu-01 SSH session' -LastConfirmed 'No installer dispatch; no installer log was expected.'
@@ -300,7 +317,7 @@ Invoke-JSSudoCommand -Session $Ubuntu1Session -Command "sudo apt install net-too
 # Invoke-JSSudoCommand -Session $Ubuntu1Session -Command "sudo update-alternatives --set python3 /usr/bin/python3.10"
 #Remove-PSSession -Session $Ubuntu1Session
 
-$Ubuntu2Session = New-PSSession -HostName $Ubuntu02VmIp -KeyFilePath $privateKey -UserName $nestedLinuxUsername -Options $sshOptions
+$Ubuntu2Session = New-PSSession -HostName $Ubuntu02VmIp -KeyFilePath $privateKey -UserName $nestedLinuxUsername -Options $ubuntu02Ssh
 Invoke-JSSudoCommand -Session $Ubuntu2Session -Command "sudo apt-get update"
 Invoke-JSSudoCommand -Session $Ubuntu2Session -Command "sudo apt install net-tools -y"
 # Invoke-JSSudoCommand -Session $Ubuntu2Session -Command "sudo apt install python3.10 -y"
@@ -338,6 +355,8 @@ try {
 } finally { $accessToken = $null }
 
 Write-Output "Onboarding the nested Linux VMs as an Azure Arc-enabled servers"
+Send-ArcBoxLinuxFile -Session $Ubuntu1Session -Path "$agentScript\installArcAgentUbuntu.sh" `
+    -Destination '/var/lib/arcbox-provisioning/arcbox-install-agent.sh' -Mode '0600'
 $accessToken = ConvertFrom-SecureString ((Get-AzAccessToken -AsSecureString).Token) -AsPlainText
 try {
     Invoke-ArcBoxGuestInstaller 'installArcAgentUbuntu.sh' 'Ubuntu-01 Arc onboarding' -Transport 'SSH remoting' `
