@@ -22,7 +22,24 @@ $ProgressPreference = 'SilentlyContinue'
 $PSDefaultParameterValues['Invoke-WebRequest:UseBasicParsing'] = $true
 $PSDefaultParameterValues['Invoke-WebRequest:TimeoutSec'] = 120
 $earlyStage = 'reviewed source and access checks'
+$startupRun = $env:ARCBOX_CSE_STARTUP_RUN
+$startupAttempt = $env:ARCBOX_CSE_STARTUP_ATTEMPT
+$startupRoot = $null
 try {
+if ($startupRun -or $startupAttempt) {
+    if ($startupRun -cnotmatch '\A[a-f0-9]{32}\z' -or $startupAttempt -cnotmatch '\A[a-f0-9]{32}\z' -or
+        [Security.Principal.WindowsIdentity]::GetCurrent().User.Value -ne 'S-1-5-18') {
+        throw 'The startup evidence identity is invalid.'
+    }
+    Remove-Item Env:ARCBOX_CSE_STARTUP_RUN, Env:ARCBOX_CSE_STARTUP_ATTEMPT
+    $startupRoot = Join-Path $env:ProgramFiles 'ArcBoxPrivate'
+    $entry = [IO.File]::Open((Join-Path $startupRoot "bootstrap-entry-$startupAttempt"), 'CreateNew', 'Write', 'None')
+    try {
+        $bytes = [Text.Encoding]::ASCII.GetBytes("$startupRun/$startupAttempt")
+        $entry.Write($bytes, 0, $bytes.Length)
+        $entry.Flush($true)
+    } finally { $entry.Dispose() }
+}
 if ($templateBaseUrl -cnotmatch '\Ahttps://raw\.githubusercontent\.com/folkenne/arc_jumpstart/[a-f0-9]{40}/azure_arc_servers_jumpstart/\z') {
     throw 'Supply the full commit SHA of the reviewed Level Up artifacts.'
 }
@@ -34,7 +51,7 @@ if ((Get-ScheduledTask -TaskName 'ArcBox-PostReboot' -ErrorAction SilentlyContin
     [Environment]::GetEnvironmentVariable('ArcBoxAttemptId', 'Machine')) {
     Stop-ArcBoxHostStep checkpoint 'A previous attempt exists. Recover from its checkpoints; do not rerun Bootstrap.'
 }
-$attempt = [guid]::NewGuid().ToString('N')
+$attempt = if ($startupAttempt) { $startupAttempt } else { [guid]::NewGuid().ToString('N') }
 $work = Split-Path -Parent (Get-ArcBoxPrivateScriptPath -Attempt $attempt)
 New-ArcBoxPrivateScriptDirectory -Path $work
 $claim = Join-Path (Split-Path -Parent $work) 'bootstrap.started'
@@ -99,6 +116,12 @@ Start-Transcript -Path $transcript -Append | Out-Null
 } catch {
     $type = $_.Exception.GetType().Name
     $line = $_.InvocationInfo.ScriptLineNumber
+    if ($startupRoot) {
+        try {
+            [IO.File]::WriteAllText((Join-Path $startupRoot "bootstrap-early-$startupAttempt.log"),
+                "Bootstrap stopped during $earlyStage ($type, line $line).")
+        } catch { Write-Warning 'The private early startup detail could not be written.' -WarningAction Continue }
+    }
     Write-Warning "Bootstrap stopped before the journal initialized: $earlyStage ($type, line $line). Check the Bootstrap extension handler output; do not replay an existing claim." -WarningAction Continue
     throw "Bootstrap could not initialize ($earlyStage). See the Bootstrap extension handler output."
 }
@@ -111,6 +134,9 @@ $stage = 'artifacts'
 $fallback = 'artifact-pin'
 $options = ConvertFrom-Json -InputObject ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($bootstrapOptionsBase64)))
 Assert-ArcBoxSuccessorOptions $options
+if ($startupRun -and $options.runId -cne $startupRun) {
+    throw 'Bootstrap options do not match the startup run identity.'
+}
 if ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value -ne 'S-1-5-18') {
     Stop-ArcBoxHostStep task-dispatch 'Expected SYSTEM Bootstrap.'
 }
@@ -264,16 +290,21 @@ $stage = 'features'
 $fallback = 'windows-features'
 Write-Output "Installing DHCP service"
 Invoke-ArcBoxOperation features 'Install Windows feature' 'DHCP' {
-    if (-not (Install-WindowsFeature -Name DHCP -IncludeManagementTools).Success) {
+    $result = Install-WindowsFeature -Name DHCP -IncludeManagementTools
+    if (-not $result.Success) {
         throw 'DHCP feature installation failed.'
     }
+    Write-ArcBoxWindowsInventory DHCP -RestartHint $result.RestartNeeded
 }
 # PowerShell SSH remoting needs a machine client, not one registered in a student profile.
 $openSsh = 'OpenSSH.Client~~~~0.0.1.0'
 if ((Get-WindowsCapability -Online -Name $openSsh).State -ne 'Installed') {
     Invoke-ArcBoxOperation features 'Install Windows capability' 'OpenSSH.Client' {
-        Add-WindowsCapability -Online -Name $openSsh | Out-Null
+        $result = Add-WindowsCapability -Online -Name $openSsh
+        Write-ArcBoxWindowsInventory OpenSSH -RestartHint $result.RestartNeeded
     }
+} else {
+    Write-ArcBoxWindowsFeatureState 'OpenSSH.Client' 'Installed' 'already present before reboot'
 }
 
 $stage = 'artifacts'
@@ -292,7 +323,7 @@ Save-ArcBoxBootstrapArtifact 'monitoring/arc-inventory-workbook.json' "$Env:ArcB
 Save-ArcBoxBootstrapArtifact 'monitoring/arc-osperformance-workbook.json' "$Env:ArcBoxDir\arc-osperformance-workbook.json"
 Save-ArcBoxBootstrapArtifact 'LogInstructions.txt' "$Env:ArcBoxLogsDir\LogInstructions.txt"
 Save-ArcBoxBootstrapArtifact 'dsc/common.dsc.yml' "$Env:ArcBoxDscDir\common.dsc.yml"
-Save-ArcBoxBootstrapArtifact 'WinGet.ps1' (Join-Path $work 'WinGet.ps1')
+Save-ArcBoxBootstrapArtifact 'ArcBoxPostReboot.ps1' (Join-Path $work 'ArcBoxPostReboot.ps1')
 Invoke-ArcBoxOperation artifacts 'Stage worker helper' 'ArcBox.Host.ps1' {
     Copy-Item -LiteralPath $hostHelper -Destination (Join-Path $work 'ArcBox.Host.ps1')
 }
@@ -305,7 +336,8 @@ Save-ArcBoxBootstrapArtifact 'mgmtMonitorWorkbookITPro.json' "$Env:ArcBoxDir\mgm
 
 Write-Host "Fetching Artifacts"
 Save-ArcBoxBootstrapArtifact 'installArcAgent.ps1' "$Env:ArcBoxDir\agentScript\installArcAgent.ps1"
-Save-ArcBoxBootstrapArtifact 'installArcAgentUbuntu.sh' "$Env:ArcBoxDir\agentScript\installArcAgentUbuntu.sh"
+Receive-ArcBoxPinnedScript $templateBaseUrl 'installArcAgentUbuntu.sh' (Join-Path $work 'installArcAgentUbuntu.sh')
+Receive-ArcBoxPinnedScript $templateBaseUrl 'arcbox_apt.py' (Join-Path $work 'arcbox_apt.py')
 Save-ArcBoxBootstrapArtifact 'testDefenderForServers.cmd' "$Env:ArcBoxDir\agentScript\testDefenderForServers.cmd"
 Save-ArcBoxBootstrapArtifact 'InstallArcSQLExtensionAtScale.ps1' "$Env:ArcBoxDir\InstallArcSQLExtensionAtScale.ps1"
 Save-ArcBoxBootstrapArtifact 'AdventureWorksLT2019.bak' "$Env:ArcBoxDir\AdventureWorksLT2019.bak"
@@ -337,15 +369,19 @@ if ($serverManagerTask) {
 Write-Header "Installing Hyper-V"
 Write-ArcBoxHostEvent features start
 Invoke-ArcBoxOperation features 'Enable Windows optional feature' 'Containers' {
-    Enable-WindowsOptionalFeature -Online -FeatureName Containers -All -NoRestart
+    $result = Enable-WindowsOptionalFeature -Online -FeatureName Containers -All -NoRestart
+    Write-ArcBoxWindowsInventory Containers -RestartHint $result.RestartNeeded
 }
 Invoke-ArcBoxOperation features 'Enable Windows optional feature' 'VirtualMachinePlatform' {
-    Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -NoRestart
+    $result = Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -NoRestart
+    Write-ArcBoxWindowsInventory VirtualMachinePlatform -RestartHint $result.RestartNeeded
 }
 Invoke-ArcBoxOperation features 'Install Windows feature' 'Hyper-V' {
-    if (-not (Install-WindowsFeature -Name Hyper-V -IncludeAllSubFeature -IncludeManagementTools).Success) {
+    $result = Install-WindowsFeature -Name Hyper-V -IncludeAllSubFeature -IncludeManagementTools
+    if (-not $result.Success) {
         throw 'Hyper-V feature installation failed.'
     }
+    Write-ArcBoxWindowsInventory 'Hyper-V' -RestartHint $result.RestartNeeded
 }
 Write-ArcBoxHostEvent features ok
 
@@ -372,7 +408,7 @@ Write-ArcBoxHostEvent tasks ok
 
 $stage = 'reboot'
 $fallback = 'task-register'
-# A separate one-shot task gives CSE time to return; WinGet independently checks the subsequent boot.
+# A separate one-shot task gives CSE time to return; the startup worker independently checks the subsequent boot.
 $rebootAt = (Get-Date).AddMinutes(2)
 $reboot = New-ScheduledTaskTrigger -Once -At $rebootAt
 $reboot.EndBoundary = $rebootAt.AddMinutes(5).ToString('s')
@@ -390,7 +426,9 @@ Write-ArcBoxHostEvent bootstrap ok
     $reason = Get-ArcBoxHostFailureCode $_ $fallback
     if (-not $profileLoadFailed) {
         Write-ArcBoxJournal $stage ERROR "Bootstrap stopped in $stage ($reason). $($script:ArcBoxHostReasons[$reason])" `
-            -Failure $_ -Operation $stage -LastConfirmed 'See the last completed stage in this attempt; no technical handoff was verified.'
+            -Failure $_ -Operation $stage -LastConfirmed 'Bootstrap has not reached a verified handoff.' `
+            -Milestone -StudentHeadline 'ArcBox-Client preparation stopped.' `
+            -LabImpact 'Automated guest preparation is not verified for this attempt.' -NextCheck $script:ArcBoxHostReasons[$reason]
     }
     $failure = $_
     try {
@@ -401,9 +439,14 @@ Write-ArcBoxHostEvent bootstrap ok
         Write-ArcBoxJournal bootstrap INFO 'The lab data disk did not verify. Hyper-V reboot and the SYSTEM worker were not reached in this attempt.'
     }
     if ($stage -eq 'os-volume') { $stage = 'features' }
-    Write-ArcBoxHostEvent $stage failed $reason -LegacyOnly:$profileLoadFailed
+    Write-ArcBoxHostEvent $stage failed $reason -LegacyOnly:$profileLoadFailed -Failure $failure
+    Write-ArcBoxJournal bootstrap INFO 'End of observed Bootstrap activity after failure.' -WorkshopRecap
     throw "ArcBox bootstrap failed [$reason]. See the local Bootstrap transcript."
 } finally {
     try { Stop-Transcript | Out-Null }
     catch { Write-Warning 'Bootstrap could not close its transcript. Check the journal and extension output.' -WarningAction Continue }
+}
+if ($startupAttempt) {
+    # The CSE child returns the script's exit, not the last incidental native tool exit.
+    exit 0
 }

@@ -31,6 +31,10 @@ $script:ArcBoxHostReasons = @{
     'guest-access' = 'Check the VM switch, distinct IPv4 leases and SSH readiness.'
     'proxy-config' = 'Check the Proxy VM, loaded Squid configuration and baseline allowlist.'
     'arc-inventory' = 'Check the current run inventory, identity permissions and guest agent logs.'
+    'arc-onboarding' = 'Check the first failed Arc onboarding operation.'
+    'apt-lock-timeout' = 'Check the APT wait record and concurrent Ubuntu updates before recovery.'
+    'apt-controller' = 'Check the reviewed Linux installer and APT controller prerequisites.'
+    'package-install' = 'Check the private package evidence before attempting recovery.'
     'arc-feature' = 'Check feature request errors and terminal status for the baseline pair.'
 }
 
@@ -92,7 +96,8 @@ function Write-ArcBoxJournal {
         [string]$Stage, [ValidateSet('INFO','WARNING','ERROR')][string]$Severity, [string]$Headline,
         [object]$Detail, [string]$Operation, [string]$LastConfirmed, [System.Management.Automation.ErrorRecord]$Failure,
         [Nullable[long]]$ElapsedMs, [switch]$DetailedOnly, [string]$Owner, [string]$LocalPortalUrl,
-        [switch]$Durable
+        [switch]$Durable, [switch]$Milestone, [string]$LabImpact, [string]$NextCheck, [string]$StudentHeadline,
+        [switch]$WorkshopRecap
     )
     $j = $script:ArcBoxJournal
     if (-not $j) { return }
@@ -125,6 +130,7 @@ function Write-ArcBoxJournal {
             headline=$Headline; operation=$Operation; lastConfirmed=$LastConfirmed; detail=$Detail}
         if ($Failure) {
             $exception = $Failure.Exception
+            $origin = $exception.Data['ArcBoxIncidentId']
             $info = $Failure.InvocationInfo
             $native = if ($exception.Data.Contains('ArcBoxNativeExit')) { $exception.Data['ArcBoxNativeExit'] }
                 elseif ($exception.PSObject.Properties['ExitCode']) { $exception.ExitCode }
@@ -138,35 +144,133 @@ function Write-ArcBoxJournal {
             if ($native -is [int]) { $row.failure.nativeExit = $native }
             if ($info.MyCommand.Name -match '\A[A-Za-z0-9_.-]{1,80}\z') { $row.failure.command = $info.MyCommand.Name }
             if ($info.ScriptName) { $row.failure.source = [IO.Path]::GetFileName($info.ScriptName) }
+            $row.incident = if ($origin -is [string] -and $origin -cmatch '\A[a-f0-9]{32}\z') {
+                @{id=$origin; relation='propagated'; effect=$Stage}
+            } else {
+                @{id=$id; relation='origin'}
+            }
         }
         $nl = [Environment]::NewLine
         $t = if ($null -ne $ElapsedMs) { " | ${ElapsedMs} ms" } else { '' }
         $text = "$(Format-ArcBoxJournalUtc $at) [$Severity] [$Stage] $Headline$t$nl"
         $text += "  $Owner | Run $($j.run) | Attempt $($j.attempt) | Boot $(Format-ArcBoxJournalUtc $j.boot)$nl"
-        $technical = $text + "  $logName | Event $id | Sequence $sequence | Release $($j.release)$nl"
+        $objective = @{
+            bootstrap='Prepare ArcBox-Client'; disk='Prepare storage for lab VMs'; 'os-volume'='Prepare the system volume'
+            powershell='Prepare PowerShell'; modules='Load required PowerShell modules'; artifacts='Stage lab artifacts'
+            features='Prepare Windows features'; tasks='Register scheduled tasks'; reboot='Restart and resume setup'
+            packages='Install base software'; 'dsc-common'='Install base software'; 'dsc-itpro'='Prepare Hyper-V'
+            'post-reboot'='Run unattended setup'; servers='Prepare nested lab VMs'; 'guest-access'='Verify guest access'
+            'host-network'='Prepare the lab network'; identity='Sign in to Azure'
+            'vhd-images'='Download and verify lab disk images'; proxy='Prepare the lab proxy'
+            'arc-connect'='Connect lab VMs to Azure Arc'; 'arc-features'='Request Azure Arc features'
+            'apt-lock-wait'='Wait for Ubuntu package updates'; workbook='Deploy the Azure workbook'
+        }[$Stage]
+        if (-not $objective) { $objective = $Stage }
+        $title = "== $objective | $Owner =="
+        if (-not $j.adminTitles) { $j.adminTitles = @{} }
+        $adminHeading = if ($j.adminTitles[$Owner] -cne $title) { "$title$nl" } else { '' }
+        $technical = $adminHeading + $text + "  $logName | Event $id | Sequence $sequence | Release $($j.release)$nl"
         if ($Operation) { $technical += "  Operation: $Operation$nl" }
+        if ($StudentHeadline -and $StudentHeadline -cne $Headline) { $technical += "  Result: $StudentHeadline$nl" }
         if ($LastConfirmed) { $technical += "  Last confirmed: $LastConfirmed$nl" }
+        if ($LabImpact) { $technical += "  Lab impact: $LabImpact$nl" }
+        if ($NextCheck) { $technical += "  Next check: $NextCheck$nl" }
         # Do not project exception messages, invocation text, arguments or raw command streams.
         if ($row.failure) { $technical += ((Format-ArcBoxJournalDetail $row.failure 'error') -join $nl) + $nl }
         if ($Detail) { $technical += ((Format-ArcBoxJournalDetail $Detail 'evidence') -join $nl) + $nl }
         $records = [ordered]@{}
         $records[$logName] = ($row | ConvertTo-Json -Depth 8 -Compress) + $nl
         $records[$readableName] = $technical + $nl
-        if (-not $DetailedOnly) {
-            $records['WorkshopDeployment.log'] = $text + "  $logName | Event $id | Sequence $sequence$nl  Administrator: $readableName$nl"
+        $propagated = $row.Contains('incident') -and $row.incident.relation -eq 'propagated'
+        $advancedName = 'scripts\WorkshopDeployment.admin.log'
+        $advancedPath = Join-Path $j.root $advancedName
+        $advancedHeading = ''
+        if (-not [IO.File]::Exists($advancedPath)) {
+            $advancedHeading = "ArcBox ITPro | Advanced workshop deployment$nl" +
+                "All times are UTC. Started or requested does not confirm completion.$nl$nl"
+        }
+        if ($advancedHeading -or $j.advancedTitle -cne $title) { $advancedHeading += "$title$nl" }
+        $state = if ($Severity -ne 'INFO') { $Severity } elseif ($Detail -is [Collections.IDictionary]) {
+            $outcome = if ($Detail.outcome) { $Detail.outcome } else { $Detail.structuredState }
+            switch ($outcome) {
+                { $_ -in 'started','start' } { 'STARTED' }
+                'requested' { 'REQUESTED' }
+                { $_ -in 'ok','succeeded','verified','downloaded','reused' } { 'OK' }
+                default { 'INFO' }
+            }
+        } else { 'INFO' }
+        $advancedText = if ($StudentHeadline -and $Severity -eq 'INFO') { $StudentHeadline } else { $Headline }
+        $records[$advancedName] = $advancedHeading +
+            ("{0}  {1,-10} {2}{3}  [#{4} | event {5} | attempt {6}]{7}" -f
+                (Format-ArcBoxJournalUtc $at), $state, $advancedText, $t, $sequence, $id, $j.attempt, $nl)
+        if ($LastConfirmed) { $records[$advancedName] += "  Last confirmed: $LastConfirmed$nl" }
+        if ($LabImpact) { $records[$advancedName] += "  Lab impact: $LabImpact$nl" }
+        if ($NextCheck) { $records[$advancedName] += "  Next check: $NextCheck$nl" }
+        if ($row.failure -and $null -ne $row.failure.nativeExit) {
+            $records[$advancedName] += "  Native exit: $($row.failure.nativeExit)$nl"
+        } elseif ($Detail -is [Collections.IDictionary] -and $Detail.nativeExit -is [int]) {
+            $records[$advancedName] += "  Native exit: $($Detail.nativeExit)$nl"
+        }
+        if ($Detail -is [Collections.IDictionary] -and $Detail.messageDisposition -ceq 'Allowlisted' -and $Detail.message) {
+            $records[$advancedName] += "  Diagnostic: $($Detail.message)$nl"
+        }
+        $workshopPath = Join-Path $j.root 'WorkshopDeployment.log'
+        if (-not $DetailedOnly -and ($Milestone -or ($Severity -eq 'ERROR' -and -not $propagated))) {
+            $followup = if ($Severity -eq 'ERROR' -or ($Severity -eq 'WARNING' -and $Failure -and -not $propagated)) {
+                "  Last confirmed: $(if ($LastConfirmed) {$LastConfirmed} else {'This step did not complete.'})$nl" +
+                "  Lab impact: $(if ($LabImpact) {$LabImpact} else {'Dependent lab steps are not ready.'})$nl" +
+                "  Next check: $(if ($NextCheck) {$NextCheck} else {'See the linked administrator event. Cause not confirmed here.'})$nl"
+            } else { '' }
+            $workshopHeadline = if ($StudentHeadline) { $StudentHeadline } else { $Headline }
+            $heading = ''
+            if (-not [IO.File]::Exists($workshopPath)) {
+                $heading = "ArcBox ITPro | Workshop deployment$nl" +
+                    "Follow the main stages in order. All times are UTC. Event IDs link to the administrator logs.$nl$nl"
+            }
+            if ($heading -or $j.workshopTitle -cne $title) { $heading += "$title$nl" }
+            $records['WorkshopDeployment.log'] = $heading + "[$Severity] $workshopHeadline$nl" + $followup +
+                "  $(Format-ArcBoxJournalUtc $at) | Event $id | $logName | Sequence $sequence | Attempt $($j.attempt)$nl"
             if ($LocalPortalUrl) { $records['WorkshopDeployment.log'] += "  Azure portal: $LocalPortalUrl$nl" }
+        }
+        if ($WorkshopRecap -and [IO.File]::Exists($workshopPath)) {
+            # The central log is already expurgated and append-only; scope prior incidents to this attempt.
+            $issues = [Collections.Generic.List[string]]::new()
+            $entry = $null
+            foreach ($line in [IO.File]::ReadLines($workshopPath)) {
+                if ($line -cmatch '^\[(ERROR|WARNING)\] (.+)$') { $entry = $line; continue }
+                if ($line.StartsWith('[INFO] ', [StringComparison]::Ordinal)) { $entry = $null; continue }
+                if ($line -cmatch '^  \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC \| Event ([a-f0-9]{32}) \| events\\[a-zA-Z0-9.-]+\.admin\.jsonl \| Sequence ([0-9]+) \| Attempt (.*)$') {
+                    if ($entry -and $Matches[3] -ceq [string]$j.attempt) {
+                        $issues.Add("  - $entry (Event $($Matches[1]), Sequence $($Matches[2]))")
+                    }
+                    $entry = $null
+                }
+            }
+            $recap = if ($issues.Count) { $issues -join $nl } else { '  No warnings or errors recorded in this attempt.' }
+            $records['WorkshopDeployment.log'] += "$nl== Warnings and errors | Attempt $($j.attempt) ==$nl$recap$nl$nl"
         }
         foreach ($sink in $records.Keys) {
             try {
                 $path = Join-Path $j.root $sink
+                $body = $records[$sink]
+                if ($sink -eq $advancedName -and $readableName -notin $failed -and
+                    [IO.File]::Exists((Join-Path $j.root $readableName))) {
+                    $body += "  Related log: $Owner.admin.log$nl"
+                }
                 if ($Durable) {
                     $stream = [IO.FileStream]::new($path, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::Read, 4096, [IO.FileOptions]::WriteThrough)
                     try {
-                        $bytes = [Text.Encoding]::UTF8.GetBytes($records[$sink])
+                        $bytes = [Text.Encoding]::UTF8.GetBytes($body)
                         $stream.Write($bytes,0,$bytes.Length)
                         $stream.Flush($true)
                     } finally { $stream.Dispose() }
-                } else { [IO.File]::AppendAllText($path, $records[$sink]) }
+                } else { [IO.File]::AppendAllText($path, $body) }
+                if ($sink -eq 'WorkshopDeployment.log') { $j.workshopTitle = if ($WorkshopRecap) { $null } else { $title } }
+                if ($sink -eq $readableName) { $j.adminTitles[$Owner] = $title }
+                if ($sink -eq $advancedName) { $j.advancedTitle = $title }
+                if ($sink -eq $logName -and $row.Contains('incident') -and $row.incident.relation -eq 'origin') {
+                    $Failure.Exception.Data['ArcBoxIncidentId'] = $id
+                }
             }
             catch { $failed += $sink }
         }
@@ -176,7 +280,9 @@ function Write-ArcBoxJournal {
     if ($failed) {
         $summary = if ($Failure) { " Error type: $($Failure.Exception.GetType().FullName)." } else { '' }
         Write-Warning "Workshop journal write failed ($($failed -join ', ')) | Event $id | $Owner [$Stage/$Severity]. $Headline$summary Check task or extension output and surviving local logs." -WarningAction Continue
-        if ($Durable) { throw 'Required Bootstrap operation record could not be persisted.' }
+        if ($Durable -and @($failed | Where-Object { $_ -ne 'scripts\WorkshopDeployment.admin.log' }).Count) {
+            throw 'Required Bootstrap operation record could not be persisted.'
+        }
     }
 }
 
@@ -244,7 +350,7 @@ function Set-ArcBoxProvisioningModulePath {
 }
 
 function Start-ArcBoxOperation {
-    param([string]$Stage,[string]$Action,[string]$Target,[string]$Version,[string]$Repository)
+    param([string]$Stage,[string]$Action,[string]$Target,[string]$Version,[string]$Repository,[switch]$DetailedOnly)
     if (-not $script:ArcBoxJournal -or $Action -cnotmatch '\A[A-Za-z][A-Za-z0-9 .:-]{1,75}\z' -or
         $Target -cnotmatch '\A[A-Za-z0-9][A-Za-z0-9 ._:/-]{0,115}\z' -or $Target -match '://' -or
         $Version -cnotmatch '\A[0-9., \[\]()]{0,40}\z' -or
@@ -253,16 +359,39 @@ function Start-ArcBoxOperation {
     }
     $op = @{operationId=[guid]::NewGuid().ToString('N'); outcome='Started'; action=$Action; target=$Target
         version=$(if ($Version) { $Version }); repository=$(if ($Repository) { $Repository })
-        engine=[string]$PSVersionTable.PSEdition; engineVersion=$PSVersionTable.PSVersion.ToString()}
+        engine=[string]$PSVersionTable.PSEdition; engineVersion=$PSVersionTable.PSVersion.ToString()
+        startedAt=[datetime]::UtcNow.ToString('o')}
     $routine = $Action -cin 'Download pinned module','Verify and stage module','Install verified module files','Download artifact',
         'Read locked module manifest','Import locked module','Verify command provider','Record loaded module provenance'
-    Write-ArcBoxJournal $Stage INFO "$Action - $Target (started)." -Detail $op -Operation $Action -DetailedOnly:$routine -Durable
+    Write-ArcBoxJournal $Stage INFO "$Action - $Target (started)." -Detail $op -Operation $Action -DetailedOnly:($routine -or $DetailedOnly) -Durable
+    $op.clock = [Diagnostics.Stopwatch]::StartNew()
     $op
 }
 
+function Get-ArcBoxWorkshopOperationResult {
+    param([hashtable]$Operation)
+    $target = $Operation.target
+    $version = $Operation.version
+    switch -CaseSensitive ($Operation.action) {
+        'Download pinned module' { "$target module package downloaded. Expected version $version; archive not yet verified." }
+        'Verify and stage module' { "$target module archive verified and staged at version $version; not yet confirmed installed." }
+        'Install verified module files' { "$target module version $version confirmed on disk; import is separate." }
+        'Read locked module manifest' { "$target installed manifest verified at version $version." }
+        'Import locked module' { "$target module imported at verified version $version." }
+        'Verify command provider' { "$target resolved to the verified module at version $version." }
+        'Verify installed engine' { "PowerShell engine version $version verified by running the installed executable." }
+        default {
+            $expected = if ($version) { " Expected version $version; this action does not attest the installed version." } else { '' }
+            "$($Operation.action) completed for $target.$expected"
+        }
+    }
+}
+
 function Complete-ArcBoxOperation {
-    param([string]$Stage,[hashtable]$Operation,[System.Management.Automation.ErrorRecord]$Failure,[switch]$ContinueOnFailure)
+    param([string]$Stage,[hashtable]$Operation,[System.Management.Automation.ErrorRecord]$Failure,[switch]$ContinueOnFailure,[switch]$DetailedOnly)
     $detail = $Operation.Clone()
+    $elapsed = if ($detail.clock) { $detail.clock.ElapsedMilliseconds }
+    $detail.Remove('clock')
     if ($Failure) {
         $detail.outcome = 'Failed'
         $safe = ConvertTo-ArcBoxOperationError $Failure.Exception.Message
@@ -277,22 +406,34 @@ function Complete-ArcBoxOperation {
             $detail.bootstrapContinued = [bool]$ContinueOnFailure
             $detail.moduleFailure = Get-ArcBoxModuleFailureDetail $Failure.Exception.Data['ArcBoxModuleFailure']
         }
-        Write-ArcBoxJournal $Stage ERROR "$($detail.action) failed for $($detail.target). See the administrator log before retrying." `
-            -Detail $detail -Operation $detail.action -Failure $Failure -DetailedOnly:$ContinueOnFailure -Durable
+        $guidance = @(switch ($Stage) {
+            'host-network' { 'Guest network setup cannot proceed.', 'Check the DHCP scope and options, NAT, or shortcut named above before changing anything.' }
+            'identity' { 'Azure-dependent lab setup cannot proceed.', 'Check the client managed identity, deployment scope and its access before retrying.' }
+            'servers' { 'Dependent guest setup cannot proceed.', 'Check the named VM or file operation in Hyper-V before retrying.' }
+            'guest-access' { 'Dependent guest configuration cannot proceed.', 'Check the named VM is running and its guest access or network service is ready.' }
+            default { 'Dependent lab steps are not ready.', 'Check the named action and the linked administrator event before retrying.' }
+        })
+        Write-ArcBoxJournal $Stage ERROR "$($detail.action) failed for $($detail.target)." `
+            -LastConfirmed 'This action started but did not complete successfully.' -LabImpact $guidance[0] -NextCheck $guidance[1] `
+            -Detail $detail -Operation $detail.action -Failure $Failure -ElapsedMs $elapsed -DetailedOnly:($ContinueOnFailure -or $Stage -ceq 'disk') -Durable
         if ($ContinueOnFailure) {
             Write-ArcBoxJournal $Stage WARNING "$($detail.action) failed for $($detail.target); lab provisioning is continuing past this failure." `
-                -Detail @{failedOperationId=$detail.operationId; bootstrapContinued=$true} -Durable
+                -Detail @{failedOperationId=$detail.operationId; bootstrapContinued=$true} -Milestone -Durable
         }
     } else {
         $detail.outcome = 'Succeeded'
+        $routine = $DetailedOnly -or $Stage -cin 'disk','modules','features','tasks','artifacts','powershell','bootstrap','reboot' -or
+            $detail.action -cin 'Download artifact','Record loaded module provenance','Add Azure CLI extension','Import Windows module'
+        $result = Get-ArcBoxWorkshopOperationResult $detail
         Write-ArcBoxJournal $Stage INFO "$($detail.action) completed for $($detail.target)." `
-            -Detail $detail -Operation $detail.action -DetailedOnly -Durable
+            -Detail $detail -Operation $detail.action -ElapsedMs $elapsed -DetailedOnly:$routine -Milestone `
+            -StudentHeadline $result -Durable
     }
 }
 
 function Invoke-ArcBoxOperation {
-    param([string]$Stage,[string]$Action,[string]$Target,[scriptblock]$Command,[string]$Version,[string]$Repository)
-    $op = Start-ArcBoxOperation $Stage $Action $Target $Version $Repository
+    param([string]$Stage,[string]$Action,[string]$Target,[scriptblock]$Command,[string]$Version,[string]$Repository,[switch]$DetailedOnly)
+    $op = Start-ArcBoxOperation $Stage $Action $Target $Version $Repository -DetailedOnly:$DetailedOnly
     try { & $Command }
     catch {
         $failure = $_
@@ -300,7 +441,7 @@ function Invoke-ArcBoxOperation {
         catch { Write-Warning 'Operation failed, but its result record could not be persisted. Use the durable start as the last attempted action.' }
         throw $failure
     }
-    Complete-ArcBoxOperation $Stage $op
+    Complete-ArcBoxOperation $Stage $op -DetailedOnly:$DetailedOnly
 }
 
 function Invoke-ArcBoxLoggedScript {
@@ -326,6 +467,7 @@ function Get-ArcBoxConnectOutputFilter {
         $safe = [pscustomobject]@{errorCode=$null; portalUrl=$null}
         foreach ($line in $Output) {
             $text = [string]$line
+            if ($text.StartsWith('ArcBoxAptWait:v1:', [StringComparison]::Ordinal)) { continue }
             if (-not $safe.errorCode -and $text -match '(?i)\bAZCM[0-9]{4}\b') { $safe.errorCode = $Matches[0].ToUpperInvariant() }
             if ($ExpectedId -and $text -match '(?i)(?:^|\s)(https://portal\.azure\.com/#(?:@([a-f0-9-]{36}))?/resource(/subscriptions/[a-f0-9-]{36}/resourceGroups/[a-z0-9._()-]{1,90}/providers/Microsoft\.HybridCompute/machines/[a-z0-9._-]{1,64})(?:/overview)?)(?:\s|$)' -and
                 $Matches[3] -ieq $ExpectedId -and (-not $Matches[2] -or $Matches[2] -ieq $ExpectedTenant)) {
@@ -341,7 +483,7 @@ function Send-ArcBoxLinuxFile {
         [Parameter(Mandatory)][System.Management.Automation.Runspaces.PSSession]$Session,
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)][string]$Destination,
-        [Parameter(Mandatory)][ValidateSet('0600','0644')][string]$Mode
+        [Parameter(Mandatory)][ValidateSet('0600','0644','0755')][string]$Mode
     )
 
     $bytes = [IO.File]::ReadAllBytes($Path)
@@ -378,7 +520,7 @@ function Send-ArcBoxLinuxFile {
 
 function Get-ArcBoxUbuntuInstallerCommand {
     {
-        param($Token, $Group, $Tenant, $Location, $Subscription, $FilterSource)
+        param($Token, $Group, $Tenant, $Location, $Subscription, $FilterSource, $Target)
         $PSNativeCommandUseErrorActionPreference = $false
         $ErrorActionPreference = 'Continue'
         $previousExit = $global:LASTEXITCODE
@@ -390,11 +532,77 @@ function Get-ArcBoxUbuntuInstallerCommand {
         if ($code -isnot [int]) { return }
         $markers = @($output | Where-Object { $_ -is [string] -and $_ -cmatch '\AArcBoxConnectExit:[0-9]{1,3}\z' })
         $observed = $markers.Count -eq 1 -and [int]($markers[0].Split(':')[1]) -eq $code
-        $id = "/subscriptions/$Subscription/resourceGroups/$Group/providers/Microsoft.HybridCompute/machines/ArcBox-Ubuntu-01"
+        $packageMarker = if ($code -ne 0 -and $markers.Count -eq 0) {
+            $packageMarkers = @($output | Where-Object {
+                $_ -is [string] -and $_.Length -le 180 -and $_.StartsWith('ArcBoxPackageFailure:v1:', [StringComparison]::Ordinal)
+            })
+            if ($packageMarkers.Count -eq 1) { $packageMarkers[0] }
+        }
+        $id = "/subscriptions/$Subscription/resourceGroups/$Group/providers/Microsoft.HybridCompute/machines/$Target"
         $safe = if ($observed) { & ([scriptblock]::Create($FilterSource)) $output $id $Tenant }
+        $wait = @($output | Where-Object { $_ -is [string] -and $_.Length -le 180 -and $_.StartsWith('ArcBoxAptWait:v1:', [StringComparison]::Ordinal) })
         [pscustomobject]@{Tag='arcbox-installer-v1'; Phase=$(if ($observed) {'agent-connect'} else {'native-command'});
-            ExitCode=$code; ConnectObserved=$observed; ErrorCode=$safe.errorCode; PortalUrl=$safe.portalUrl}
+            ExitCode=$code; ConnectObserved=$observed; ErrorCode=$safe.errorCode; PortalUrl=$safe.portalUrl; PackageMarker=$packageMarker
+            Target=$Target; WaitMarker=$(if ($wait.Count -eq 1) {$wait[0]})
+            ControllerUnavailable=($code -eq 125 -and $output -ccontains 'ArcBoxAptControllerUnavailable')}
     }
+}
+
+function ConvertFrom-ArcBoxPackageFailure {
+    param([string]$Marker, [int]$ExitCode, [string]$Target)
+    if ($ExitCode -le 0 -or $ExitCode -gt 255 -or $Marker.Length -gt 180) { return }
+    $appendState = 'captured|truncated|unchanged|missing|unbound|unstable|unavailable'
+    $pattern = '\AArcBoxPackageFailure:v1:(?<exit>[0-9]{1,3}):(?<at>unknown|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z):' +
+        '(?<ref>none|package\.[a-zA-Z0-9]{10}):(?<installer>captured|truncated-or-limit|empty|unavailable):' +
+        "(?<apt>$appendState):(?<dpkg>$appendState):" + '(?<clue>apt-lock|apt-dependency|apt-download|dpkg-error|unclassified)\z'
+    if ($Marker -cnotmatch $pattern -or [int]$Matches.exit -ne $ExitCode) { return }
+    $at = $Matches.at
+    if ($at -cne 'unknown') {
+        $parsed = [datetime]::MinValue
+        if (-not [datetime]::TryParseExact($at, 'yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::AdjustToUniversal -bor [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$parsed)) { return }
+    }
+    if ($Matches.ref -ceq 'none' -and ($Matches.installer -cne 'unavailable' -or
+        $Matches.apt -cne 'unavailable' -or $Matches.dpkg -cne 'unavailable' -or $Matches.clue -cne 'unclassified')) { return }
+    $summary = switch -CaseSensitive ($Matches.clue) {
+        'apt-lock' { 'APT reported a package-manager lock error.' }
+        'apt-dependency' { 'APT reported a dependency resolution error.' }
+        'apt-download' { 'APT reported a download error.' }
+        'dpkg-error' { 'dpkg reported an error.' }
+        default {
+            if ($Matches.installer -cin 'captured','truncated-or-limit' -or
+                $Matches.apt -cin 'captured','truncated' -or $Matches.dpkg -cin 'captured','truncated') {
+                'No known error signature was found in the captured diagnostics.'
+            } else {
+                'No diagnostic detail was available for classification.'
+            }
+        }
+    }
+    [ordered]@{
+        schema='arcbox-package-failure-v1'; target=$Target; stage='package-install'; nativeExit=$ExitCode
+        failedAt=$(if ($at -cne 'unknown') { $at })
+        captureRef=$(if ($Matches.ref -cne 'none') { $Matches.ref })
+        installer=$Matches.installer; apt=$Matches.apt; dpkg=$Matches.dpkg; clue=$Matches.clue; summary=$summary
+    }
+}
+
+function ConvertFrom-ArcBoxAptWait {
+    param([string]$Marker, [string]$Target, [int]$ExitCode)
+    $stamp = '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z'
+    if ($Marker.Length -gt 180 -or $Target -cnotmatch '\A[A-Za-z0-9][A-Za-z0-9.-]{0,62}\z' -or
+        $Marker -cnotmatch ("\AArcBoxAptWait:v1:(?<start>$stamp):(?<end>$stamp):(?<elapsed>[0-9]{1,4}):(?<count>[1-9][0-9]{0,3}):" +
+        '(?<state>released|timeout|waiting):(?<native>0|2|100):(?<ref>package\.[a-zA-Z0-9]{10})\z')) { return }
+    if ([int]$Matches.elapsed -gt 1800 -or ($Matches.state -ceq 'timeout' -and $ExitCode -ne 124)) { return }
+    $start = $end = [datetime]::MinValue
+    $format = 'yyyy-MM-ddTHH:mm:ssZ'
+    $culture = [Globalization.CultureInfo]::InvariantCulture
+    $styles = [Globalization.DateTimeStyles]::AssumeUniversal
+    if (-not [datetime]::TryParseExact($Matches.start,$format,$culture,$styles,[ref]$start) -or
+        -not [datetime]::TryParseExact($Matches.end,$format,$culture,$styles,[ref]$end)) { return }
+    [ordered]@{schema='arcbox-apt-wait-v1'; stage='apt-lock-wait'; target=$Target; state=$Matches.state
+        startedAt=$Matches.start; endedAt=$(if ($Matches.state -ne 'waiting') {$Matches.end}); elapsedSeconds=[int]$Matches.elapsed
+        intervals=[int]$Matches.count; budgetSeconds=1800; captureRef=$Matches.ref
+        aptNativeExit=$(if ($Matches.native -ne '0') {[int]$Matches.native})}
 }
 
 function Get-ArcBoxAgentStatusCommand {
@@ -432,9 +640,14 @@ function Get-ArcBoxAgentStatusCommand {
             }
             $result.Reason = 'agent status response could not be parsed'
             $document = ConvertFrom-Json -InputObject $stdout.Result -ErrorAction Stop
-            if ($document -is [pscustomobject] -and $document.status -is [string] -and $document.status -iin 'Connected','Disconnected') {
-                $result.Status = if ($document.status -ieq 'Connected') {'Connected'} else {'Disconnected'}
-                $result.Reason = $null
+            if ($document -is [pscustomobject]) {
+                foreach ($state in 'Connected','Disconnected','Expired','Not registered') {
+                    if ($document.status -is [string] -and $document.status.Trim() -ieq $state) {
+                        $result.Status = $state
+                        $result.Reason = $null
+                        break
+                    }
+                }
                 $raw = $document.lastHeartbeat
                 if ($raw -is [datetime] -and $raw.Kind -ne 'Unspecified') { $raw = $raw.ToString('o') }
                 $heartbeat = [datetimeoffset]::MinValue
@@ -462,9 +675,10 @@ function Receive-ArcBoxAgentStatusJob {
 
 function Write-ArcBoxGuestConnection {
     param([string]$Name, [string]$Stage, [string]$Transport, [string]$GuestLog, [scriptblock]$Read,
-        [bool]$Registered)
+        [bool]$Registered, [string]$Guest)
+    $clock = [Diagnostics.Stopwatch]::StartNew()
     $attempts = if ($Registered) { 3 } else { 1 }
-    $detail = [ordered]@{command='azcmagent show status lastHeartbeat --json'; expected='Connected';
+    $detail = [ordered]@{command='azcmagent show status lastHeartbeat --json'; expected='Connected'; target=$Guest;
         status='Unverified'; lastHeartbeat=$null; nativeExit=$null; errorCode=$null; reason=$null; transport=$Transport; guestLog=$GuestLog}
     for ($i = 1; $i -le $attempts; $i++) {
         $detail.reads = $i
@@ -477,7 +691,8 @@ function Write-ArcBoxGuestConnection {
             $detail.reason = "$Transport status read failed or timed out"
             break
         }
-        if ($rows.Count -ne 1 -or $rows[0].Tag -cne 'arcbox-agent-state-v1' -or $rows[0].Status -cnotin 'Unverified','Connected','Disconnected' -or
+        if ($rows.Count -ne 1 -or $rows[0].Tag -cne 'arcbox-agent-state-v1' -or
+            $rows[0].Status -cnotin 'Unverified','Connected','Disconnected','Expired','Not registered' -or
             ($null -ne $rows[0].ExitCode -and $rows[0].ExitCode -isnot [int]) -or
             ($rows[0].Status -ne 'Unverified' -and ($null -eq $rows[0].ExitCode -or $rows[0].ExitCode -ne 0))) {
             $detail.reason = 'agent status response could not be parsed'
@@ -504,26 +719,31 @@ function Write-ArcBoxGuestConnection {
     }
     $observation = switch ($detail.status) {
         'Connected' { 'The local agent reports Connected; the Azure inventory check is separate.' }
-        'Disconnected' { 'The local agent reports Disconnected. Check the guest agent log and network path.' }
+        { $_ -in 'Disconnected','Expired','Not registered' } { "The local agent reports $_. Check the guest agent log and network path." }
         default { "Connection Unverified: $($detail.reason). Check the guest agent and remoting path." }
     }
     $when = if ($detail.lastHeartbeat) { " Last known heartbeat: $(Format-ArcBoxJournalUtc $detail.lastHeartbeat)." }
         else { ' No heartbeat timestamp was verified.' }
     $level = if ($detail.status -eq 'Connected') {'INFO'} else {'WARNING'}
-    Write-ArcBoxJournal "$Stage connection" $level "$observation$when" -Owner $Name -Operation 'Read local agent connection' `
-        -LastConfirmed 'Read-only guest evidence; this does not override the registration result.' -Detail $detail
+    Write-ArcBoxJournal "$Stage connection" $level "${Stage}: $observation$when" -Owner $Name -Operation 'azcmagent show' -Milestone `
+        -LastConfirmed 'Read-only guest evidence; this does not override the registration result.' -Detail $detail -ElapsedMs $clock.ElapsedMilliseconds
 }
 
 function Invoke-ArcBoxGuestInstaller {
     param([string]$Name, [string]$Stage, [scriptblock]$Action, [string]$Transport, [string]$GuestLog,
-        [string]$ExpectedId, [scriptblock]$ReadStatus)
+        [scriptblock]$ReadStatus, [switch]$NonBlocking,
+        [ValidateSet('ArcBox-Win2K25','ArcBox-Ubuntu-01')][string]$Guest,
+        [string]$Group, [string]$Subscription, [hashtable]$RegistrationLinks)
     $watch = [Diagnostics.Stopwatch]::StartNew()
     $detail = [ordered]@{transport=$Transport; guestLog=$GuestLog; protocol='arcbox-installer-v1'; outcome='dispatch'; registration='Not observed'}
+    if ($NonBlocking) { $detail.nonBlocking = $true }
+    if ($Guest) { $detail.target = $Guest }
     Write-ArcBoxJournal $Stage INFO "Requesting $Name over $Transport. Guest execution is not yet confirmed." -Owner $Name -Detail $detail
     $last = 'Invocation requested. The installer did not return a verified status.'
     $windowsHelper = $Name -ceq 'installArcAgent.ps1'
     $registrationError = $null
-    $portalUrl = $null
+    $target = $wait = $package = $portal = $null
+    $reason = 'arc-onboarding'
     try {
         try { $results = @(& $Action) }
         catch {
@@ -551,12 +771,50 @@ function Invoke-ArcBoxGuestInstaller {
         $code = $results[0].ExitCode
         $detail.nativeExit = $code
         $detail.phase = $results[0].Phase
+        if (-not $windowsHelper -and $results[0].PSObject.Properties['Target'] -and
+            $results[0].Target -cmatch '\A[A-Za-z0-9][A-Za-z0-9.-]{0,62}\z') {
+            $target = $results[0].Target
+            $wait = ConvertFrom-ArcBoxAptWait $results[0].WaitMarker $target $code
+            if ($wait) {
+                $message = switch ($wait.state) {
+                    'released' { "Package manager locks cleared on $target after $($wait.elapsedSeconds) seconds of waiting." }
+                    'timeout' { "Package manager locks did not clear on $target before the 30-minute deadline." }
+                    default { "Package manager waiting on $target has no confirmed finish." }
+                }
+                Write-ArcBoxJournal 'apt-lock-wait' INFO $message -Owner $Name -Detail $wait -Milestone
+            }
+        }
+        if (-not $windowsHelper -and $detail.phase -ceq 'native-command' -and $code -gt 0 -and
+            $results[0].PSObject.Properties['PackageMarker']) {
+            $package = ConvertFrom-ArcBoxPackageFailure $results[0].PackageMarker $code $target
+            if ($package) {
+                $detail.phase = $package.stage
+                $detail.packageFailure = $package
+                $reason = 'package-install'
+            }
+            if ($wait -and $wait.state -ceq 'timeout') {
+                $detail.phase = 'apt-lock-wait'
+                $detail.nativeExit = $wait.aptNativeExit
+                $detail.controllerExit = $code
+                if ($package) { $package.nativeExit = $null }
+                $reason = 'apt-lock-timeout'
+            } elseif ($results[0].PSObject.Properties['ControllerUnavailable'] -and $results[0].ControllerUnavailable) {
+                $detail.phase = 'apt-controller'
+                $detail.nativeExit = $null
+                $detail.controllerExit = $code
+                $reason = 'apt-controller'
+            }
+        }
         if ($results[0].ConnectObserved) {
             $detail.registration = if ($code -eq 0) {'Succeeded'} else {'Failed'}
             if ($results[0].ErrorCode -cmatch '\AAZCM[0-9]{4}\z') { $detail.errorCode = $results[0].ErrorCode }
+            if ($Guest -and $Subscription -cmatch '\A[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\z' -and
+                $Group -cmatch '\A[a-zA-Z0-9._()-]{1,90}\z') {
+                $expectedPortal = "https://portal.azure.com/#/resource/subscriptions/$Subscription/resourceGroups/$Group/providers/Microsoft.HybridCompute/machines/$Guest"
+                if ($results[0].PortalUrl -is [string] -and $results[0].PortalUrl -ieq $expectedPortal) { $portal = $expectedPortal }
+            }
+            $detail.portalLinkEmitted = [bool]$portal
         }
-        $portalUrl = if ($ExpectedId -and $results[0].PortalUrl -is [string] -and
-            $results[0].PortalUrl -ceq ('https://portal.azure.com/#/resource' + $ExpectedId)) { $results[0].PortalUrl }
         $last = "$Transport returned a validated installer result; the connection read is separate."
         if ($null -eq $code) {
             $detail.outcome = 'guest-step-failure'
@@ -564,9 +822,10 @@ function Invoke-ArcBoxGuestInstaller {
             throw [InvalidOperationException]::new("$Name failed in $($detail.phase) before observing a native exit.")
         }
         if ($code -ne 0) {
-            $detail.outcome = 'native-failure'
+            $detail.outcome = if ($reason -eq 'apt-lock-timeout') {'lock-timeout'} else {'native-failure'}
             $errorDetail = [InvalidOperationException]::new("$Name returned native exit $code ($($detail.phase)). Inspect the indicated guest log if that stage reached it.")
-            $errorDetail.Data['ArcBoxNativeExit'] = $code
+            if ($null -ne $detail.nativeExit) { $errorDetail.Data['ArcBoxNativeExit'] = $detail.nativeExit }
+            $errorDetail.Data['ArcBoxReason'] = $reason
             throw $errorDetail
         }
         if (-not $results[0].ConnectObserved) {
@@ -575,15 +834,20 @@ function Invoke-ArcBoxGuestInstaller {
         }
         $detail.outcome = 'exit-zero'
         Write-ArcBoxJournal "$Stage registration" INFO 'Registration succeeded: azcmagent connect returned exit 0. Checking local connection separately.' `
-            -Owner $Name -Operation 'azcmagent connect' -Detail $detail -LastConfirmed $last -ElapsedMs $watch.ElapsedMilliseconds -LocalPortalUrl $portalUrl
+            -Owner $Name -Operation 'azcmagent connect' -Detail $detail -LastConfirmed $last -ElapsedMs $watch.ElapsedMilliseconds `
+            -Milestone -Durable -LocalPortalUrl $portal -StudentHeadline "${Stage}: registration succeeded; local connection is a separate check."
+        if ($portal -and $null -ne $RegistrationLinks) { $RegistrationLinks[$Guest] = $true }
     } catch {
         $registrationError = $_
         $next = switch ($detail.outcome) {
             'transport' { "$Transport failed before a result arrived. Check guest readiness and session access; no guest log is guaranteed." }
             'native-failure' {
                 if ($detail.registration -eq 'Failed') { "Registration failed: azcmagent connect returned exit $($detail.nativeExit). Check the guest agent log." }
-                else { "$Name returned native exit $($detail.nativeExit) ($($detail.phase)); registration was not observed. Check the guest installer log if it was reached." }
+                elseif ($detail.phase -eq 'package-install') { "The Linux Arc agent package did not install on $target. Azure Arc registration did not start." }
+                elseif ($detail.phase -eq 'apt-controller') { "Package setup on $target stopped at the installer safety check or lock controller. Registration did not start." }
+                else { "$Stage failed. Registration was not observed." }
             }
+            'lock-timeout' { "The 30-minute package lock deadline expired on $target. Azure Arc registration did not start." }
             'guest-step-failure' { "$Name failed in $($detail.phase) before observing a native exit. Check the stage and indicated guest logs." }
             'missing-connect-result' { "$Name did not confirm an azcmagent connect result. Check the staged helper and guest logs." }
             'missing-result' { "$Name returned no installer result. Check the remote session and guest log before any retry." }
@@ -591,17 +855,48 @@ function Invoke-ArcBoxGuestInstaller {
             'duplicate-result' { "$Name returned more than one result. Check the helper version and guest log before any retry." }
             default { 'The guest response did not establish an installer outcome. Check the remote session and guest log before any retry.' }
         }
-        Write-ArcBoxJournal "$Stage registration" ERROR $next `
-            -Owner $Name -Operation $Name -Detail $detail -LastConfirmed $last -ElapsedMs $watch.ElapsedMilliseconds -Failure $_ -LocalPortalUrl $portalUrl
+        $severity = if ($NonBlocking) { 'WARNING' } else { 'ERROR' }
+        Write-ArcBoxJournal "$Stage registration" $severity $next -Milestone:$NonBlocking -LocalPortalUrl $portal `
+            -Owner $Name -Operation $(if ($detail.registration -eq 'Failed') {'azcmagent connect'} else {$Name}) `
+            -Detail $detail -LastConfirmed $last -ElapsedMs $watch.ElapsedMilliseconds -Failure $_ `
+            -LabImpact $(if ($NonBlocking) { 'Arc-dependent exercises for this guest are not ready; other lab setup can continue.' }
+                else { 'Arc-dependent exercises for this guest are not ready.' }) -StudentHeadline "$Stage did not complete. $(
+                if ($reason -eq 'apt-lock-timeout') { 'The package manager lock did not clear and registration did not start.' }
+                elseif ($detail.phase -eq 'package-install') { 'The agent package did not install and registration did not start.' }
+                elseif ($detail.registration -eq 'Failed') { "Registration returned exit $($detail.nativeExit); check the guest agent log." }
+                else { 'Check the referenced administrator event for the verified result.' })" `
+            -NextCheck $(if ($reason -eq 'apt-lock-timeout') { $script:ArcBoxHostReasons[$reason] }
+                elseif ($package) { $package.summary + ' Check the private package evidence before retrying.' }
+                else { 'Check the linked administrator event and guest evidence. Cause not confirmed here.' })
     }
-    if ($ReadStatus -and $detail.outcome -ne 'transport') {
-        try { Write-ArcBoxGuestConnection $Name $Stage $Transport $GuestLog $ReadStatus ($detail.registration -eq 'Succeeded') }
+    if ($ReadStatus) {
+        try { Write-ArcBoxGuestConnection $Name $Stage $Transport $GuestLog $ReadStatus ($detail.registration -eq 'Succeeded') $Guest }
         catch { Write-ArcBoxJournal "$Stage connection" WARNING 'Connection Unverified: the client could not record the guest status. Check the guest agent log.' -Owner $Name -Failure $_ }
-    } elseif ($ReadStatus) {
-        Write-ArcBoxJournal "$Stage connection" WARNING "Connection Unverified: $Transport did not return an installer result; no guest read was established." `
-            -Owner $Name -Detail @{status='Unverified'; reason='installer transport failed'; transport=$Transport}
     }
     if ($registrationError) { throw $registrationError }
+}
+
+function Invoke-ArcBoxGuestRegistration {
+    param([string]$Guest, [scriptblock]$Action)
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    try { & $Action | Out-Null; return $null }
+    catch {
+        if (-not $_.Exception.Data['ArcBoxIncidentId']) {
+            Write-ArcBoxJournal arc-connect WARNING "${Guest}: Arc registration could not be completed." `
+                -Failure $_ -ElapsedMs $clock.ElapsedMilliseconds -Milestone -Durable `
+                -Detail @{target=$Guest; outcome='registration-unverified'; nonBlocking=$true} `
+                -LastConfirmed 'Guest preparation completed; Arc registration was not verified.' `
+                -LabImpact 'Arc exercises for this guest are not ready; other lab setup can continue.' `
+                -NextCheck 'Check the referenced administrator event and verify the guest and Azure Arc status before retrying.'
+        }
+        return $_
+    }
+}
+
+function Write-ArcBoxArcFeaturesNotReached {
+    param([string]$Guest, [System.Management.Automation.ErrorRecord]$Failure)
+    Write-ArcBoxJournal arc-features WARNING "${Guest}: monitoring associations, extensions and patch assessment were not requested because this guest was not verified Connected. Check Arc registration before attempting these exercises." `
+        -Failure $Failure -Milestone -Durable -Detail @{target=$Guest; outcome='not-reached'; nonBlocking=$true}
 }
 
 function Get-ArcBoxHostFailureCode {
@@ -617,7 +912,7 @@ function Write-ArcBoxHostEvent {
             'reboot','winget','dsc-common','dsc-itpro','tasks','performance',
             'guest-access','proxy','arc-connect','arc-features','post-reboot','servers','workbook')][string]$Stage,
         [ValidateSet('start','ok','failed','requested')][string]$State,
-        [string]$Reason, [switch]$LegacyOnly
+        [string]$Reason, [switch]$LegacyOnly, [System.Management.Automation.ErrorRecord]$Failure
     )
     $record = [ordered]@{
         v = 1; stage = $Stage; state = $State; at = [datetime]::UtcNow.ToString('o')
@@ -645,7 +940,7 @@ function Write-ArcBoxHostEvent {
             bootstrap='Client Bootstrap'; disk='Lab data drive'; powershell='PowerShell 7'
             modules='PowerShell dependencies'; artifacts='Lab artifact staging'; features='Windows and Hyper-V features'
             tasks='SYSTEM and presentation task registration'; reboot='Hyper-V host reboot'
-            performance='Host sampler'; 'post-reboot'='SYSTEM provisioning'; 'dsc-common'='Eight pinned packages'
+            performance='Host sampler'; 'post-reboot'='SYSTEM provisioning'; 'dsc-common'='Pinned machine packages'
             'dsc-itpro'='Hyper-V configuration'; servers='Nested guest setup'; workbook='Workbook setup'
             'guest-access'='Nested guest access'; proxy='Proxy setup'; 'arc-connect'='Baseline Arc connections'; 'arc-features'='Baseline Arc features'
         }[$Stage]
@@ -664,7 +959,27 @@ function Write-ArcBoxHostEvent {
                 else { "$area stopped ($Reason). Dependent stages are not verified. $($script:ArcBoxHostReasons[$Reason])" }
             }
         }
-        Write-ArcBoxJournal $Stage $level $headline -Detail @{structuredState=$State; reason=$Reason} -ElapsedMs $ms
+        $milestone = ($State -eq 'ok' -and $Stage -in 'bootstrap','reboot','powershell','modules','features','tasks','dsc-common','dsc-itpro','servers','guest-access','arc-connect','arc-features','workbook','post-reboot') -or
+            ($State -eq 'failed' -and $Stage -in 'bootstrap','post-reboot','performance') -or
+            ($State -eq 'requested' -and $Stage -eq 'arc-features') -or
+            ($State -eq 'start' -and $Stage -in 'bootstrap','dsc-common','servers','arc-connect')
+        $student = switch ("$Stage/$State") {
+            'post-reboot/ok' { 'The SYSTEM worker reached the end of provisioning. Resolve any Arc warnings before the affected exercises; verify RDP and SSMS in the student account.' }
+            'post-reboot/failed' { 'Automated ITPro provisioning stopped. The lab is not ready for handoff.' }
+            'reboot/ok' { 'ArcBox-Client restarted and Hyper-V is running. Automated guest setup is resuming.' }
+            'bootstrap/start' { 'ArcBox-Client preparation started. Its outcome is not yet verified.' }
+            'bootstrap/ok' { 'ArcBox-Client preparation finished and requested a restart. Wait for automated setup to resume.' }
+            'bootstrap/failed' { 'ArcBox-Client preparation stopped. The lab is not ready for handoff.' }
+            'guest-access/ok' { 'Hyper-V guest access checks passed. Arc registration is a separate step.' }
+            'dsc-common/ok' { 'The required machine tools were installed or verified on ArcBox-Client. Hyper-V setup is next.' }
+            'dsc-itpro/ok' { 'Hyper-V configuration checks passed on ArcBox-Client. Guest setup is next.' }
+            'arc-connect/ok' { 'Azure Arc registration was confirmed for the expected lab guests. Arc features are checked separately.' }
+            'arc-features/ok' { 'Arc feature setup returned. Check the requested extensions and assessments before using those exercises.' }
+            'workbook/ok' { 'Workbook setup returned. Open the workbook to verify it displays lab data.' }
+            default { $headline }
+        }
+        Write-ArcBoxJournal $Stage $level $headline -Detail @{structuredState=$State; reason=$Reason} -ElapsedMs $ms `
+            -Milestone:$milestone -StudentHeadline $student -Failure $Failure -NextCheck $(if ($State -eq 'failed') { $script:ArcBoxHostReasons[$Reason] })
     }
 }
 
@@ -721,7 +1036,19 @@ function Get-ArcBoxScriptPins {
     [ordered]@{
         'ArcServersLogonScript.ps1' = @{
             Uri = "${TemplateBaseUrl}artifacts/ArcServersLogonScript.ps1"
-            Sha256 = '4f52a8e52a27f521d6feb6ff58e489dd176e3eccd24b767e69d6c0fd745707cf'
+            Sha256 = '95c14e956775e17416b833e50fdb726d8a0e0e7ed77314268c95bc9cec506557'
+        }
+        'installArcAgentUbuntu.sh' = @{
+            Uri = "${TemplateBaseUrl}artifacts/installArcAgentUbuntu.sh"
+            Sha256 = 'c553ed4e1531eeee13823147fd7c2c5a5565d9f4969c47421e40f7c0de40374f'
+        }
+        'arcbox_apt.py' = @{
+            Uri = "${TemplateBaseUrl}artifacts/arcbox_apt.py"
+            Sha256 = '33cfb095795c2ac3180320c7d78389222be2e472dbb298082bbb2d79d53ab5ff'
+        }
+        'ArcBox.LinuxShell.sh' = @{
+            Uri = "${TemplateBaseUrl}artifacts/ArcBox.LinuxShell.sh"
+            Sha256 = '95f97685dcf3993f3847357b7e449218090b5baf78a4802c379a6122ca268036'
         }
         'ArcBox.Linux.ps1' = @{
             Uri = "${TemplateBaseUrl}artifacts/ArcBox.Linux.ps1"
@@ -787,7 +1114,7 @@ function Protect-ArcBoxDirectory {
 
 function Get-ArcBoxStartupArguments {
     param([string]$Work)
-    '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}"' -f (Join-Path $Work 'WinGet.ps1')
+    '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}"' -f (Join-Path $Work 'ArcBoxPostReboot.ps1')
 }
 
 function Invoke-ArcBoxCheckpoint {
@@ -810,7 +1137,7 @@ function Invoke-ArcBoxCheckpoint {
     } catch {
         Write-ArcBoxJournal $Stage ERROR "Checkpoint $Stage stopped. Inspect the failed operation before resuming." `
             -Failure $_ -Operation $Stage -LastConfirmed 'Completion is not inferred from dispatch.'
-        Write-ArcBoxHostEvent $Stage failed (Get-ArcBoxHostFailureCode $_ $Reason)
+        Write-ArcBoxHostEvent $Stage failed (Get-ArcBoxHostFailureCode $_ $Reason) -Failure $_
         throw
     }
 }
@@ -1065,7 +1392,7 @@ function Initialize-ArcBoxDataDrive {
                 Stop-ArcBoxHostStep disk-layout "Verified disk $($match.device.Number) owns F: but has an unexpected additional partition layout."
             }
             Write-ArcBoxJournal disk INFO "Reused healthy NTFS VMsDisk (F:) on verified Windows disk $($match.device.Number); no disk write needed." `
-                -ElapsedMs $clock.ElapsedMilliseconds
+                -ElapsedMs $clock.ElapsedMilliseconds -Milestone:(!$VerifyOnly)
             return
         }
         if ($VerifyOnly -or $match.device.PartitionStyle -ne 'RAW' -or "$($match.device.NumberOfPartitions)" -cne '0') {
@@ -1126,14 +1453,16 @@ function Initialize-ArcBoxDataDrive {
             Stop-ArcBoxHostStep disk-write 'Formatting returned, but F: ownership, label, filesystem or health did not verify.'
         }
         Write-ArcBoxJournal disk INFO "Verified healthy NTFS VMsDisk (F:) on Windows disk $($current.device.Number) after initialization." `
-            -ElapsedMs $clock.ElapsedMilliseconds
+            -ElapsedMs $clock.ElapsedMilliseconds -Milestone
     } catch {
         if (-not $_.Exception.Data['ArcBoxReason']) { $_.Exception.Data['ArcBoxReason'] = 'disk-write' }
         $detail = if ($_.Exception.Data['ArcBoxReason'] -in 'disk-contract','disk-discovery','disk-identity','disk-letter','disk-layout','disk-drift') {
             $_.Exception.Message
         } else { "$operation did not complete or verify." }
         Write-ArcBoxJournal disk ERROR "$detail $last $($script:ArcBoxHostReasons[$_.Exception.Data['ArcBoxReason']])" `
-            -ElapsedMs $clock.ElapsedMilliseconds -Failure $_ -LastConfirmed $last -Detail @{operation=$operation}
+            -ElapsedMs $clock.ElapsedMilliseconds -Failure $_ -LastConfirmed $last -Detail @{operation=$operation} `
+            -Milestone -LabImpact 'Nested VM storage is not verified; VM provisioning cannot proceed.' `
+            -NextCheck $script:ArcBoxHostReasons[$_.Exception.Data['ArcBoxReason']]
         throw
     }
 }
@@ -1145,11 +1474,93 @@ function Test-ArcBoxPowerShell {
     $LASTEXITCODE -eq 0 -and "$version" -ceq '7.6.10'
 }
 
+function Get-ArcBoxVersionToken {
+    param([string]$Value)
+    if ($Value -cmatch '\A[0-9]+(?:\.[0-9]+){1,5}(?:p[0-9]+|\.windows\.[0-9]+)?(?:[+-][A-Za-z0-9][A-Za-z0-9.+~-]*)?\z' -and $Value.Length -le 80) {
+        $Value
+    }
+}
+
+function Get-ArcBoxToolVersion {
+    param([string]$Path, [string]$Arguments, [string]$Pattern)
+    $start = [Diagnostics.ProcessStartInfo]::new($Path, $Arguments)
+    $start.WorkingDirectory = Split-Path -Parent $Path
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $proc = [Diagnostics.Process]::Start($start)
+    try {
+        $stdout = $proc.StandardOutput.ReadToEndAsync()
+        $stderr = $proc.StandardError.ReadToEndAsync()
+        if (-not $proc.WaitForExit(5000)) { $proc.Kill(); throw 'Version probe timed out.' }
+        if (-not $stdout.Wait(500) -or -not $stderr.Wait(500) -or $proc.ExitCode -ne 0) { throw 'Version probe did not complete successfully.' }
+        foreach ($text in $stdout.Result, $stderr.Result) {
+            if ($text.Length -le 512 -and $text.Trim() -cmatch $Pattern) {
+                return (Get-ArcBoxVersionToken $Matches['version'])
+            }
+        }
+    } finally { $proc.Dispose() }
+}
+
+function Write-ArcBoxWindowsInventory {
+    param([ValidateSet('DHCP','Hyper-V','Containers','VirtualMachinePlatform','OpenSSH')][string[]]$Group,
+        [switch]$AfterReboot, [string]$RestartHint)
+    $moment = if ($AfterReboot) { 'post-reboot readback' } else { 'pre-reboot readback' }
+    foreach ($item in $Group) {
+        try {
+            switch ($item) {
+                { $_ -in 'Containers','VirtualMachinePlatform' } {
+                    $state = [string](Get-WindowsOptionalFeature -Online -FeatureName $item -ErrorAction Stop).State
+                    Write-ArcBoxWindowsFeatureState $item $state $moment $RestartHint
+                }
+                'OpenSSH' {
+                    $state = [string](Get-WindowsCapability -Online -Name 'OpenSSH.Client~~~~0.0.1.0' -ErrorAction Stop).State
+                    Write-ArcBoxWindowsFeatureState 'OpenSSH.Client' $state $moment $RestartHint
+                }
+                default {
+                    $names = if ($item -eq 'DHCP') { @('DHCP','RSAT-DHCP') } else { @('Hyper-V','RSAT-Hyper-V-Tools') }
+                    $seen = @{}
+                    for ($i = 0; $i -lt $names.Count; $i++) {
+                        $name = $names[$i]
+                        if ($seen.ContainsKey($name)) { continue }
+                        $seen[$name] = $true
+                        try {
+                            $feature = Get-WindowsFeature -Name $name -ErrorAction Stop
+                            Write-ArcBoxWindowsFeatureState $name ([string]$feature.InstallState) $moment $RestartHint
+                            if ($feature.SubFeatures) { $names += @($feature.SubFeatures) }
+                        } catch { Write-ArcBoxWindowsFeatureState $name '' $moment $RestartHint }
+                    }
+                }
+            }
+        } catch {
+            $name = if ($item -eq 'OpenSSH') { 'OpenSSH.Client' } else { $item }
+            Write-ArcBoxWindowsFeatureState $name '' $moment $RestartHint
+        }
+    }
+}
+
+function Write-ArcBoxWindowsFeatureState {
+    param([string]$Name, [string]$State, [string]$Moment, [string]$RestartHint)
+    if ($Name -cnotmatch '\A[A-Za-z0-9.-]{1,80}\z') { throw 'Invalid Windows feature inventory name.' }
+    $known = $State -cin 'Installed','Available','Removed','Enabled','Disabled','DisabledWithPayloadRemoved',
+        'EnablePending','DisablePending','InstallPending','UninstallPending','NotPresent','Staged'
+    $status = if ($known) { $State } else { 'state not observed' }
+    $restart = if ($State -cmatch 'Pending\z') { ' Restart pending; verify the state after reboot.' }
+        elseif ($RestartHint -in 'Yes','True') { ' The servicing request reported a restart requirement; confirm after reboot.' }
+        else { '' }
+    $level = if ($known) { 'INFO' } else { 'WARNING' }
+    Write-ArcBoxJournal features $level "$Name Windows component: $status ($Moment).$restart" -DetailedOnly:($level -eq 'INFO') -Milestone -Durable
+}
+
 function Install-ArcBoxPowerShell {
     param([string]$Executable, [string]$RecoveryMsi)
     $installed = Test-ArcBoxPowerShell $Executable
     if (-not $installed -and (Test-Path -LiteralPath $Executable)) {
         Stop-ArcBoxHostStep ps-existing 'Existing PowerShell is not the expected version; no downgrade attempted.'
+    }
+    if ($installed) {
+        Write-ArcBoxJournal powershell INFO 'Existing PowerShell engine version 7.6.10 verified and reused.' -Milestone -Durable
     }
     $msi = "$RecoveryMsi.$([guid]::NewGuid().ToString('N')).msi"
     $phase = 'ps-download'
@@ -1277,44 +1688,72 @@ function New-ArcBoxLinuxSshOptions {
     $options
 }
 
+function Get-ArcBoxGuestArcResource {
+    param([string]$Id, [datetimeoffset]$NotBefore)
+    $result = Invoke-AzRestMethod -Path "${Id}?api-version=2024-07-10" -Method GET -ErrorAction Stop
+    if ([int]$result.StatusCode -eq 404) { return }
+    if ([int]$result.StatusCode -ne 200) { Stop-ArcBoxHostStep arc-inventory 'The expected Arc resource could not be read.' }
+    $item = $result.Content | ConvertFrom-Json -ErrorAction Stop
+    $rawCreated = $item.systemData.createdAt
+    if ($rawCreated -is [datetime]) { $rawCreated = $rawCreated.ToString('o') }
+    $created = [datetimeoffset]::MinValue
+    if ($item.id -ine $Id -or $rawCreated -notmatch '(?:Z|[+-]\d\d:\d\d)\z' -or
+        -not [datetimeoffset]::TryParse([string]$rawCreated, [ref]$created) -or
+        $created -lt $NotBefore -or $created -gt [datetimeoffset]::UtcNow) {
+        Stop-ArcBoxHostStep arc-inventory 'An Arc resource is stale or mismatched.'
+    }
+    $item
+}
+
 function Wait-ArcBoxBaselineRegistration {
-    param([string]$Group, [string]$Subscription, [datetimeoffset]$NotBefore,
-        [ValidateRange(1,600)][int]$TimeoutSeconds = 600)
-    $expected = @{}
-    foreach ($name in 'ArcBox-Win2K25', 'ArcBox-Ubuntu-01') {
-        $expected["/subscriptions/$Subscription/resourceGroups/$Group/providers/Microsoft.HybridCompute/machines/$name"] = $name
+    param([string]$Group, [string]$Subscription, [datetimeoffset]$NotBefore, [hashtable]$Attempts,
+        [ValidateRange(1,600)][int]$TimeoutSeconds = 600, [hashtable]$RegistrationLinks)
+    $pending = @{}
+    $connected = @{}
+    $failures = @{}
+    foreach ($guest in 'ArcBox-Win2K25','ArcBox-Ubuntu-01') {
+        if (-not $Attempts.ContainsKey($guest)) { throw "Missing Arc attempt result for $guest." }
+        if ($Attempts[$guest]) { $failures[$guest] = $Attempts[$guest]; continue }
+        $pending[$guest] = "/subscriptions/$Subscription/resourceGroups/$Group/providers/Microsoft.HybridCompute/machines/$guest"
     }
     $clock = [Diagnostics.Stopwatch]::StartNew()
-    do {
-        $machines = @(Get-AzConnectedMachine -ResourceGroupName $Group -SubscriptionId $Subscription -ErrorAction Stop)
-        $seen = @{}
-        foreach ($machine in $machines) {
-            if (-not $machine.Id -or -not $expected.ContainsKey($machine.Id) -or $seen.ContainsKey($machine.Id)) {
-                Stop-ArcBoxHostStep arc-inventory 'Unexpected or duplicate Arc machine in the workshop resource group.'
-            }
-            $seen[$machine.Id] = $true
-        }
-        if ($machines.Count -eq 2 -and @($machines | Where-Object Status -eq 'Connected').Count -eq 2) {
-            foreach ($machine in $machines) {
-                # The Az listing does not reliably supply systemData for a fresh-run check.
-                $result = Invoke-AzRestMethod -Path "$($machine.Id)?api-version=2024-07-10" -Method GET -ErrorAction Stop
-                if ([int]$result.StatusCode -ne 200) { throw 'Could not verify the Arc resource creation time.' }
-                $item = $result.Content | ConvertFrom-Json -ErrorAction Stop
-                $rawCreated = $item.systemData.createdAt
-                if ($rawCreated -is [datetime]) { $rawCreated = $rawCreated.ToString('o') }
-                $created = [datetimeoffset]::MinValue
-                if ($item.id -ine $machine.Id -or $item.properties.status -ne 'Connected' -or
-                    $rawCreated -notmatch '(?:Z|[+-]\d\d:\d\d)\z' -or
-                    -not [datetimeoffset]::TryParse([string]$rawCreated, [ref]$created) -or
-                    $created -lt $NotBefore -or $created -gt [datetimeoffset]::UtcNow) {
-                    Stop-ArcBoxHostStep arc-inventory 'An Arc resource is stale, mismatched, or not Connected.'
+    while ($pending.Count) {
+        foreach ($guest in @($pending.Keys | Sort-Object)) {
+            $id = $pending[$guest]
+            $reportedStatus = 'Not observed'
+            try {
+                $item = Get-ArcBoxGuestArcResource $id $NotBefore
+                if ($item -and $item.properties.status -cin 'Connected','Disconnected','Expired','Error') {
+                    $reportedStatus = $item.properties.status
                 }
+                if ($reportedStatus -cne 'Connected') {
+                    if ($clock.Elapsed.TotalSeconds -lt $TimeoutSeconds) { continue }
+                    Stop-ArcBoxHostStep arc-inventory 'The expected Arc resource was not verified Connected before the inventory deadline.'
+                }
+                $version = Get-ArcBoxVersionToken $item.properties.agentVersion
+                $evidence = if ($version) { "Azure-reported installed version: $version." } else { 'Installed version not observed.' }
+                Write-ArcBoxJournal arc-connect INFO "$guest Azure Connected Machine agent: Azure resource verified Connected. $evidence" `
+                    -Milestone -LocalPortalUrl $(if ($null -eq $RegistrationLinks -or -not $RegistrationLinks[$guest]) {
+                        "https://portal.azure.com/#/resource$($item.id)"
+                    })
+                $connected[$guest] = $id
+            } catch {
+                $failures[$guest] = $_
+                Write-ArcBoxJournal arc-connect WARNING "${guest}: Azure Arc connection was not verified." -Failure $_ -Milestone -Durable `
+                    -ElapsedMs $clock.ElapsedMilliseconds `
+                    -Detail @{target=$guest; outcome='connection-unverified'; observedStatus=$reportedStatus; nonBlocking=$true} `
+                    -LastConfirmed 'The registration command returned successfully; Azure connection was not verified.' `
+                    -LabImpact 'Arc exercises for this guest are not ready; other lab setup can continue.' `
+                    -NextCheck 'Check the referenced administrator event and compare the local agent state with Azure inventory.'
             }
-            return $expected
+            $pending.Remove($guest)
         }
-        if ($clock.Elapsed.TotalSeconds -lt $TimeoutSeconds) { Start-Sleep -Seconds 10 }
-    } while ($clock.Elapsed.TotalSeconds -lt $TimeoutSeconds)
-    Stop-ArcBoxHostStep arc-inventory 'The two expected Arc resources did not reach Connected before timeout.'
+        if ($pending.Count) {
+            $remaining = $TimeoutSeconds - $clock.Elapsed.TotalSeconds
+            if ($remaining -gt 0) { Start-Sleep -Milliseconds ([int](1000 * [Math]::Min(10, $remaining))) }
+        }
+    }
+    @{Connected=$connected; Failures=$failures}
 }
 
 function Invoke-ArcBoxAz {
@@ -1332,29 +1771,99 @@ function Invoke-ArcBoxAz {
 
 function Receive-ArcBoxVhd {
     param([string]$Path, [string]$SourceUri, [string]$AzCopy,
+        [Parameter(Mandatory)][ValidatePattern('\AVBD-ArcBox-[A-Za-z0-9-]+\.vhdx\z')][string]$ImageName,
         [ValidatePattern('\A[0-9a-f]{64}\z')][string]$ExpectedSha256)
-    if (Test-Path -LiteralPath $Path) {
-        if (-not (Test-VHD -Path $Path -ErrorAction Stop)) { throw 'Existing workshop VHDX failed validation; it was not overwritten.' }
-        if ($ExpectedSha256 -and (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash -ine $ExpectedSha256) {
-            throw "Existing workshop image does not match the tested SHA-256: $(Split-Path -Leaf $Path)."
-        }
-        return
-    }
-
-    $pending = "$Path.$([guid]::NewGuid().ToString('N')).pending.vhdx"
+    $PSNativeCommandUseErrorActionPreference = $false
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $operation = 'Download and verify lab disk images'
+    $detail = @{image=$ImageName; operationId=[guid]::NewGuid().ToString('N'); startedAt=[datetime]::UtcNow.ToString('o'); outcome='started'
+        hashRequired=[bool]$ExpectedSha256; sha256Verified=$false}
+    Write-ArcBoxJournal vhd-images INFO "${ImageName}: checking for a local image before transfer. Not yet verified." `
+        -DetailedOnly -Operation $operation -Detail $detail
+    $pending = $null
+    $phase = 'existing-image-check'
     try {
-        & $AzCopy copy $SourceUri $pending --overwrite=false --check-length=true --log-level=ERROR
-        if ($LASTEXITCODE -ne 0) { throw "VHDX download returned $LASTEXITCODE." }
-        if (-not (Test-Path -LiteralPath $pending -PathType Leaf) -or
-            -not (Test-VHD -Path $pending -ErrorAction Stop)) {
-            throw 'The staged VHDX did not pass Hyper-V validation.'
+        $reuse = Test-Path -LiteralPath $Path
+        $candidate = $Path
+        if (-not $reuse) {
+            $phase = 'transfer'
+            $pending = "$Path.$([guid]::NewGuid().ToString('N')).pending.vhdx"
+            $candidate = $pending
+            $nativeExit = & {
+                # Windows PowerShell treats redirected native stderr as a nonterminating error.
+                $ErrorActionPreference = 'Continue'
+                $previousExit = $global:LASTEXITCODE
+                try {
+                    $global:LASTEXITCODE = $null
+                    & $AzCopy copy $SourceUri $pending --overwrite=false --check-length=true --log-level=ERROR 2>&1 | Out-Null
+                    $global:LASTEXITCODE
+                } finally { $global:LASTEXITCODE = $previousExit }
+            }
+            if ($null -eq $nativeExit) { throw 'AzCopy did not return a process exit code.' }
+            if ($nativeExit -ne 0) {
+                $failure = [InvalidOperationException]::new('VHDX download failed. Check the restricted AzCopy job log.')
+                $failure.Data['ArcBoxNativeExit'] = [int]$nativeExit
+                throw $failure
+            }
         }
-        if ($ExpectedSha256 -and (Get-FileHash -LiteralPath $pending -Algorithm SHA256 -ErrorAction Stop).Hash -ine $ExpectedSha256) {
-            throw "Staged workshop image does not match the tested SHA-256: $(Split-Path -Leaf $Path)."
+        $phase = if ($reuse) { 'existing-image-validation' } else { 'staged-image-validation' }
+        $detail.validationCheck = 'hyper-v'
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf) -or
+            -not (Test-VHD -Path $candidate -ErrorAction Stop)) {
+            throw 'The workshop VHDX did not pass Hyper-V validation.'
         }
-        # File.Move refuses an existing destination, including one created during staging.
-        [IO.File]::Move($pending, $Path)
+        if ($ExpectedSha256) {
+            $detail.validationCheck = 'sha256'
+            if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256 -ErrorAction Stop).Hash -ine $ExpectedSha256) {
+                throw 'The workshop VHDX does not match the reviewed SHA-256.'
+            }
+            $detail.sha256Verified = $true
+        }
+        $detail.Remove('validationCheck')
+        if (-not $reuse) {
+            $phase = 'local-publication'
+            # File.Move refuses an existing destination, including one created during staging.
+            [IO.File]::Move($pending, $Path)
+        }
+    } catch {
+        $detail.outcome = 'failed'
+        $detail.phase = $phase
+        $elapsed = $clock.ElapsedMilliseconds
+        $last, $next = switch ($phase) {
+            'transfer' { 'No local image was available; transfer did not complete successfully.', 'Check storage reachability and the restricted AzCopy job log.' }
+            'existing-image-validation' { 'An existing local image was found but was not verified or overwritten.', 'Check the existing image with Hyper-V and compare its required SHA-256, if configured.' }
+            'staged-image-validation' { 'AzCopy returned success, but the staged image was not verified or published.', 'Check the Hyper-V validation result and the required SHA-256, if configured.' }
+            'local-publication' { 'The staged image passed validation but was not moved into place.', 'Check the destination, permissions, and any competing file. Do not overwrite an existing image.' }
+            default { 'The local image state could not be confirmed.', 'Check access to the intended image directory.' }
+        }
+        $label = $phase.Replace('-', ' ')
+        Write-ArcBoxJournal vhd-images ERROR "${ImageName}: $label failed after $elapsed ms." `
+            -Operation $operation -Detail $detail -ElapsedMs $elapsed -Failure $_ -LastConfirmed $last `
+            -LabImpact 'Dependent VM setup cannot proceed.' -NextCheck $next
+        throw
     } finally {
-        if (Test-Path -LiteralPath $pending) { Remove-Item -LiteralPath $pending -Force -ErrorAction Continue }
+        if ($pending -and (Test-Path -LiteralPath $pending)) {
+            Remove-Item -LiteralPath $pending -Force -ErrorAction Continue
+        }
     }
+    $detail.outcome = if ($reuse) { 'reused' } else { 'downloaded' }
+    $action = if ($reuse) { 'reused the verified local image' } else { 'downloaded, verified, and moved the image into place' }
+    $elapsed = $clock.ElapsedMilliseconds
+    $checks = if ($ExpectedSha256) { 'Hyper-V validation and SHA-256 matched.' } else { 'Hyper-V validation passed; no SHA-256 is configured.' }
+    Write-ArcBoxJournal vhd-images INFO "${ImageName}: $action in $elapsed ms. $checks" `
+        -Operation $operation -Detail $detail -ElapsedMs $elapsed -DetailedOnly
+}
+
+function Receive-ArcBoxVhdBatch {
+    param([Collections.IDictionary]$Images,[string]$SourceFolder,[string]$AzCopy,[hashtable]$ImageHashes)
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    foreach ($image in $Images.GetEnumerator()) {
+        $verification = @{}
+        if ($ImageHashes.ContainsKey($image.Value)) { $verification.ExpectedSha256 = $ImageHashes[$image.Value] }
+        Receive-ArcBoxVhd -Path $image.Key -ImageName $image.Value -SourceUri ($SourceFolder + $image.Value) -AzCopy $AzCopy @verification
+    }
+    $seconds = $clock.Elapsed.TotalSeconds.ToString('0.0', [Globalization.CultureInfo]::InvariantCulture)
+    Write-ArcBoxJournal vhd-images INFO "$($Images.Count) lab disk images verified and available locally ($seconds s). VM preparation can continue." `
+        -Milestone -Operation 'Download and verify lab disk images' -ElapsedMs $clock.ElapsedMilliseconds `
+        -Detail @{outcome='verified'; imageCount=$Images.Count}
 }

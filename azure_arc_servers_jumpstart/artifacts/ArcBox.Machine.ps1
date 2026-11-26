@@ -7,10 +7,11 @@ $script:ArcBoxPackageSpecs = [ordered]@{
     'Microsoft.DotNet.SDK.8' = @('exe', 'ProgramFiles\dotnet\sdk\8.0.428\dotnet.dll')
     'Microsoft.Sysinternals.BGInfo' = @('zip', 'ProgramFiles\ArcBoxTools\Bginfo64.exe')
     'FireDaemon.OpenSSL' = @('exe', 'ProgramFiles\FireDaemon OpenSSL 3.5\bin\openssl.exe')
+    'PuTTY.PuTTY' = @('exe', 'ProgramFiles\ArcBox PuTTY\putty.exe')
+    'Microsoft.WindowsTerminal' = @('zip', 'ProgramFiles\ArcBox Windows Terminal\WindowsTerminal.exe')
 }
 
-# The engineering pilot requires the eight common packages; ITPro 7-Zip is omitted.
-# not App Installer's per-user alias or configuration engine on Server 2022.
+# ITPro uses machine packages, not App Installer's per-user alias on Server 2022.
 function Assert-ArcBoxMachinePackages {
     param($Packages)
     $names = @($Packages.PSObject.Properties.Name)
@@ -23,7 +24,8 @@ function Assert-ArcBoxMachinePackages {
         $kind = $script:ArcBoxPackageSpecs[$id][0]
         if ($pin.uri -cnotmatch ('\Ahttps://[a-zA-Z0-9][a-zA-Z0-9.-]*/[a-zA-Z0-9_./%+~-]+\.' + $kind + '\z') -or
             $pin.sha256 -cnotmatch '\A[a-f0-9]{64}\z' -or
-            $pin.installedSha256 -cnotmatch '\A[a-f0-9]{64}\z') {
+            $pin.installedSha256 -cnotmatch '\A[a-f0-9]{64}\z' -or
+            ($id -ceq 'PuTTY.PuTTY' -and $pin.sha256 -cne $pin.installedSha256)) {
             Stop-ArcBoxHostStep winget-setup "Missing or invalid installer pin for $id."
         }
     }
@@ -60,9 +62,49 @@ function Write-ArcBoxMachinePackageEvent {
         'skipped-existing' { "$Id installation skipped: the existing file matched its required digest." }
         default { "$Id $Event requested; outcome not yet verified." }
     }
+    $inventory = $Event -cin 'destination-verified','skipped-existing'
+    $student = if ($inventory) {
+        $version = $null
+        try { $version = Get-ArcBoxMachinePackageVersion $Id $Measured.path }
+        catch { Write-Verbose "Installed version probe failed for $Id; no version reported." }
+        $observed = if ($version) { "Installed version: $version." } else { 'Installed version not observed.' }
+        "$headline $observed"
+    } elseif ($Event -eq 'installer-exit' -and $Measured.code -in 1641,3010) {
+        "$Id installer requires a restart. Further package setup is paused; check the administrator event before resuming."
+    } elseif ($severity -eq 'ERROR') {
+        "$Id installer did not complete. Check the administrator event before resuming."
+    } else { $headline }
     # Only the known digests and native exit travel to the structured administrator record.
     Write-ArcBoxJournal packages $severity $headline -Owner 'ArcBox.Machine.ps1' -ElapsedMs $ElapsedMs `
-        -Detail @{package=$Id; action=$Event; nativeExit=$Measured.code; installerSha256=$Measured.assetSha256; installedSha256=$Measured.sha256}
+        -Detail @{package=$Id; action=$Event; nativeExit=$Measured.code; installerSha256=$Measured.assetSha256; installedSha256=$Measured.sha256} `
+        -DetailedOnly:($severity -eq 'INFO') -Milestone:($severity -eq 'WARNING') -StudentHeadline $student
+}
+
+function Get-ArcBoxMachinePackageVersion {
+    param([string]$Id,[string]$VerifiedPath)
+    switch -CaseSensitive ($Id) {
+        'Git.Git' { Get-ArcBoxToolVersion $VerifiedPath '--version' '\Agit version (?<version>[0-9A-Za-z.+~-]+)\z' }
+        'Microsoft.Azure.AZCopy.10' { Get-ArcBoxToolVersion $VerifiedPath '--version' '\Aazcopy version (?<version>[0-9A-Za-z.+~-]+)\z' }
+        'FireDaemon.OpenSSL' { Get-ArcBoxToolVersion $VerifiedPath 'version' '\AOpenSSL (?<version>[0-9A-Za-z.+~-]+)(?: [^\r\n]*)?\z' }
+        'Microsoft.AzureCLI' {
+            # az.cmd is a launcher, not a version source. Read the bundled distribution metadata.
+            $site = Join-Path (Split-Path -Parent (Split-Path -Parent $VerifiedPath)) 'Lib\site-packages'
+            $dist = @(Get-ChildItem -LiteralPath $site -Directory -Filter 'azure_cli-*.dist-info' -ErrorAction Stop)
+            if ($dist.Count -ne 1) { return }
+            $headers = @(Get-Content -LiteralPath (Join-Path $dist[0].FullName 'METADATA') -TotalCount 20 -ErrorAction Stop)
+            $versions = @($headers | Where-Object { $_ -clike 'Version: *' })
+            if ('Name: azure-cli' -cin $headers -and $versions.Count -eq 1) {
+                Get-ArcBoxVersionToken $versions[0].Substring(9)
+            }
+        }
+        'PuTTY.PuTTY' {
+            $product = [Diagnostics.FileVersionInfo]::GetVersionInfo($VerifiedPath).ProductVersion
+            if ($product -cmatch '\ARelease (?<version>[0-9.]+)\z') { Get-ArcBoxVersionToken $Matches['version'] }
+        }
+        { $_ -cin 'Microsoft.VisualStudioCode','Microsoft.Edge','Microsoft.DotNet.SDK.8','Microsoft.Sysinternals.BGInfo','Microsoft.WindowsTerminal' } {
+            Get-ArcBoxVersionToken ([Diagnostics.FileVersionInfo]::GetVersionInfo($VerifiedPath).ProductVersion)
+        }
+    }
 }
 
 function Get-ArcBoxReviewedAssetRedirect {
@@ -88,6 +130,10 @@ function Save-ArcBoxMachineAsset {
         'Microsoft.Azure.AZCopy.10' {
             'https://github.com/Azure/azure-storage-azcopy/releases/download/v10.34.2/azcopy_windows_amd64_10.34.2.zip'
             '/github-production-release-asset/114798676/2dbcf361-0df2-4da1-a1bb-142005d0ed82'
+        }
+        'Microsoft.WindowsTerminal' {
+            'https://github.com/microsoft/terminal/releases/download/v1.25.3131.0/Microsoft.WindowsTerminal_1.25.3131.0_x64.zip'
+            '/github-production-release-asset/100060912/8c3d82dc-3343-497e-ba88-ad42407b2a1f'
         }
     }
     if (-not $reviewed -or $Uri -cne $reviewed) {
@@ -121,6 +167,94 @@ function Save-ArcBoxMachineAsset {
     }
 }
 
+function Get-ArcBoxDesktopToolFiles {
+    param([string]$Root)
+    $folder = Get-Item -LiteralPath $Root -ErrorAction Stop
+    if (-not $folder.PSIsContainer -or ($folder.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        Stop-ArcBoxHostStep winget-setup 'Desktop tool directory is not a regular directory.'
+    }
+    $map = @{}
+    foreach ($entry in Get-ChildItem -LiteralPath $Root -Recurse -Force -ErrorAction Stop) {
+        if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            Stop-ArcBoxHostStep winget-setup 'Desktop tool directory contains a reparse point.'
+        }
+        if (-not $entry.PSIsContainer) {
+            $map[$entry.FullName.Substring($folder.FullName.Length + 1)] = (Get-FileHash -LiteralPath $entry.FullName).Hash
+        }
+    }
+    $map
+}
+
+function Set-ArcBoxDesktopToolShortcut {
+    param([string]$Display,[string]$Expected)
+    $programs = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonPrograms)
+    if (-not $programs -or -not (Test-Path -LiteralPath $programs -PathType Container)) {
+        Stop-ArcBoxHostStep winget-setup 'The shared Start menu could not be located.'
+    }
+    $shortcut = Join-Path $programs "ArcBox - $Display.lnk"
+    $shell = New-Object -ComObject WScript.Shell
+    $link = $shell.CreateShortcut($shortcut)
+    if (-not (Test-Path -LiteralPath $shortcut)) {
+        $link.TargetPath = $Expected
+        $link.WorkingDirectory = Split-Path -Parent $Expected
+        $link.Save()
+    }
+    $observed = $shell.CreateShortcut($shortcut)
+    if (-not (Test-Path -LiteralPath $shortcut -PathType Leaf) -or $observed.TargetPath -ine $Expected -or $observed.Arguments) {
+        Stop-ArcBoxHostStep winget-setup "Shared Start menu shortcut for $Display did not verify."
+    }
+}
+
+function Install-ArcBoxDesktopTool {
+    param([string]$Id,[string]$Asset,[string]$Expected,[string]$Hash,[string]$Work)
+    $display = if ($Id -eq 'PuTTY.PuTTY') { 'PuTTY' } else { 'Windows Terminal' }
+    if (-not [Environment]::Is64BitProcess -or
+        ($Id -ceq 'Microsoft.WindowsTerminal' -and [Environment]::OSVersion.Version.Build -lt 19041)) {
+        Stop-ArcBoxHostStep winget-setup "$display requires the reviewed x64 Windows host and a compatible build."
+    }
+    $destination = Split-Path -Parent $Expected
+    $scratch = Join-Path $Work "$Id-$([guid]::NewGuid().ToString('N'))"
+    [void][IO.Directory]::CreateDirectory($scratch)
+    try {
+        $leaf = Split-Path -Leaf $Expected
+        if ($Id -eq 'Microsoft.WindowsTerminal') {
+            Expand-Archive -LiteralPath $Asset -DestinationPath $scratch -ErrorAction Stop
+            $roots = @(Get-ChildItem -LiteralPath $scratch -Directory -Force)
+            if ($roots.Count -ne 1 -or $roots[0].Name -cnotmatch '\Aterminal-[0-9.]+\z') {
+                Stop-ArcBoxHostStep winget-setup 'Unexpected Windows Terminal archive layout.'
+            }
+            $payload = $roots[0].FullName
+        } else {
+            $payload = Join-Path $scratch 'putty'
+            [void][IO.Directory]::CreateDirectory($payload)
+            Copy-Item -LiteralPath $Asset -Destination (Join-Path $payload $leaf) -ErrorAction Stop
+        }
+        $binary = Join-Path $payload $leaf
+        if (-not (Get-ArcBoxMatchedTool $binary $Hash) -or (Get-AuthenticodeSignature -FilePath $binary).Status -ne 'Valid') {
+            Stop-ArcBoxHostStep winget-setup "Unverified desktop tool: $display."
+        }
+        $staged = Get-ArcBoxDesktopToolFiles $payload
+        $reused = Test-Path -LiteralPath $destination
+        if (-not $reused) {
+            Protect-ArcBoxDirectory -Path $payload -LabRead
+            [IO.Directory]::Move($payload, $destination)
+        }
+        $installed = Get-ArcBoxDesktopToolFiles $destination
+        if ($installed.Count -ne $staged.Count -or
+            @($staged.Keys | Where-Object { !$installed.ContainsKey($_) -or $installed[$_] -cne $staged[$_] }).Count) {
+            Stop-ArcBoxHostStep winget-setup "$display files do not match the reviewed package; the destination was not overwritten."
+        }
+        Set-ArcBoxDesktopToolShortcut $display $Expected
+        Write-ArcBoxMachinePackageEvent $Id $(if ($reused) {'skipped-existing'} else {'destination-verified'}) `
+            @{path=$Expected; sha256=$Hash}
+        Write-ArcBoxJournal packages INFO "${display}: shared Start menu shortcut verified. Launch in the student account is not verified." `
+            -Owner 'ArcBox.Machine.ps1' -DetailedOnly -Durable
+    } finally {
+        try { Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction Stop }
+        catch { Write-ArcBoxJournal packages WARNING 'Could not remove temporary desktop tool files; see the administrator event.' -Failure $_ -DetailedOnly }
+    }
+}
+
 function Install-ArcBoxMachinePackages {
     param($Packages, [string]$Work)
     Assert-ArcBoxMachinePackages $Packages
@@ -131,7 +265,8 @@ function Install-ArcBoxMachinePackages {
         $expected = Join-Path ([Environment]::GetEnvironmentVariable($base)) $leaf
         $pin = $Packages.PSObject.Properties[$id].Value
         $installed = Get-ArcBoxMatchedTool $expected $pin.installedSha256
-        if ($installed) {
+        $desktopTool = $id -cin 'PuTTY.PuTTY','Microsoft.WindowsTerminal'
+        if ($installed -and -not $desktopTool) {
             Write-ArcBoxMachinePackageEvent $id skipped-existing $installed
             continue
         }
@@ -142,6 +277,11 @@ function Install-ArcBoxMachinePackages {
         $assetHash = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()
         if ($assetHash -cne $pin.sha256) {
             Stop-ArcBoxHostStep winget-setup "Installer digest mismatch for $id."
+        }
+        if ($desktopTool) {
+            Install-ArcBoxDesktopTool $id $asset $expected $pin.installedSha256 $Work
+            Remove-Item -LiteralPath $asset -Force
+            continue
         }
         if ($kind -eq 'zip') {
             $expanded = Join-Path $Work "$id-expanded"
@@ -204,6 +344,8 @@ function Set-ArcBoxHyperVHost {
         -not (Get-NetIPAddress -InterfaceAlias $alias -IPAddress '10.10.1.1' -PrefixLength 24 -ErrorAction Stop)) {
         Stop-ArcBoxHostStep dsc-config 'Hyper-V host configuration did not converge.'
     }
+    Write-ArcBoxJournal 'Hyper-V configuration' INFO 'ArcBox-Client: enhanced sessions, internal lab switch and host IPv4 configuration verified.' `
+        -Owner 'ArcBox.Machine.ps1' -DetailedOnly -Durable
 }
 
 function Initialize-ArcBoxGuests {
@@ -243,5 +385,7 @@ function Initialize-ArcBoxGuests {
             -not (Get-VMIntegrationService -VM $vm -Name 'Guest Service Interface').Enabled) {
             Stop-ArcBoxHostStep dsc-config "Unexpected configuration for $name; preserve its state."
         }
+        Write-ArcBoxJournal 'Nested guest setup' INFO "${name}: generation, CPU, memory, disk, switch, secure boot and guest file integration verified. Guest readiness is a separate check." `
+            -Owner 'ArcBox.Machine.ps1' -DetailedOnly -Durable
     }
 }

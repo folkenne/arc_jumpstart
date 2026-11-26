@@ -17,11 +17,11 @@ catch [IO.IOException] { Stop-ArcBoxHostStep checkpoint 'Another startup worker 
 $transcribing = $false
 try {
     if (Test-Path -LiteralPath (Join-Path $work 'post-reboot.ok')) { return }
-    Start-Transcript -Path "C:\ArcBox\Logs\WinGet-provisioning-$attempt.log" -Append | Out-Null
+    Start-Transcript -Path "C:\ArcBox\Logs\ArcBoxPostReboot-provisioning-$attempt.log" -Append | Out-Null
     $transcribing = $true
     $boot = Get-ArcBoxBootTime
     $artifactBase = [Environment]::GetEnvironmentVariable('templateBaseUrl', 'Machine')
-    Start-ArcBoxJournal -ScriptName 'WinGet.ps1' -Boot $boot -Release (($artifactBase -split '/')[5])
+    Start-ArcBoxJournal -ScriptName 'ArcBoxPostReboot.ps1' -Boot $boot -Release (($artifactBase -split '/')[5])
     Write-ArcBoxJournal post-reboot INFO 'SYSTEM startup worker entered. Checking the registered task and Hyper-V reboot.'
     Write-ArcBoxJournal artifacts INFO 'Loading the PowerShell 7 lab profile.' -Owner 'PSProfile.ps1'
     try { . (Join-Path $PSHOME 'Profile.ps1') }
@@ -44,6 +44,7 @@ try {
     (Get-Service -Name vmms).WaitForStatus('Running', (New-TimeSpan -Minutes 3))
     Assert-ArcBoxPostReboot -PreparedOnBoot $prepared -CurrentBoot $boot -HyperVRunning $true
     Write-ArcBoxHostEvent reboot ok
+    Write-ArcBoxWindowsInventory DHCP,'Hyper-V',Containers,VirtualMachinePlatform,OpenSSH -AfterReboot
     $inputFile = Get-Content -LiteralPath (Join-Path $work 'Inputs.json') -Raw | ConvertFrom-Json
     $pins = Get-ArcBoxScriptPins -TemplateBaseUrl $artifactBase
     $sqlHelper = Join-Path $work 'testDefenderForSQL.ps1'
@@ -66,8 +67,13 @@ try {
         -not (Test-Path -LiteralPath (Join-Path $openSsh 'ssh-keygen.exe') -PathType Leaf)) {
         Stop-ArcBoxHostStep guest-access 'Windows OpenSSH Client is missing after reboot.'
     }
+    $sshVersion = $null
+    try { $sshVersion = Get-ArcBoxToolVersion (Join-Path $openSsh 'ssh.exe') '-V' '\AOpenSSH_for_Windows_(?<version>[0-9.p]+)(?:, [^\r\n]*)?\z' }
+    catch { Write-Verbose 'OpenSSH Client version probe failed.' }
+    $sshEvidence = if ($sshVersion) { "Installed version: $sshVersion." } else { 'Installed version not observed.' }
+    Write-ArcBoxJournal features INFO "Windows OpenSSH Client executable is present after reboot. $sshEvidence" -DetailedOnly -Durable
     $env:Path = "$openSsh;" + [Environment]::GetEnvironmentVariable('Path', 'Machine') + ";$env:ProgramFiles\ArcBoxTools"
-    Invoke-ArcBoxCheckpoint $work servers guest-access {
+    Invoke-ArcBoxCheckpoint $work servers checkpoint {
         . (Join-Path $work 'ArcBox.Modules.ps1')
         $moduleRoot = Join-Path $env:ProgramFiles 'PowerShell\Modules'
         Set-ArcBoxProvisioningModulePath $moduleRoot
@@ -81,7 +87,12 @@ try {
         # Keep Az imports isolated above; nested setup also uses the inbox Windows modules.
         $windowsModules = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules'
         $env:PSModulePath += ';' + $windowsModules
-        Import-Module -Name (Join-Path $windowsModules 'DhcpServer\DhcpServer.psd1') -SkipEditionCheck -ErrorAction Stop
+        Invoke-ArcBoxOperation modules 'Import Windows module' 'DhcpServer' {
+            $dhcp = Import-Module -Name (Join-Path $windowsModules 'DhcpServer\DhcpServer.psd1') -SkipEditionCheck -PassThru -ErrorAction Stop
+            $version = Get-ArcBoxVersionToken ([string]($dhcp | Where-Object Name -EQ DhcpServer).Version)
+            $evidence = if ($version) { "Imported version: $version." } else { 'Imported version not observed.' }
+            Write-ArcBoxJournal modules INFO "DhcpServer Windows module import returned successfully. $evidence" -DetailedOnly -Durable
+        }
         Assert-ArcBoxPrivateScript $privateScript $pins['ArcServersLogonScript.ps1'].Sha256
         Assert-ArcBoxPrivateScript $sqlHelper $pins['testDefenderForSQL.ps1'].Sha256
         Assert-ArcBoxPrivateScript $sqlModule $pins['SqlAdvancedThreatProtectionShell.psm1'].Sha256
@@ -119,11 +130,12 @@ try {
 } catch {
     Write-ArcBoxJournal post-reboot ERROR 'SYSTEM worker stopped. Unreached or externally dispatched stages are not verified; inspect the worker log and checkpoints.' `
         -Failure $_ -Operation 'SYSTEM startup worker' -LastConfirmed 'See the last completed checkpoint for this attempt.'
-    Write-ArcBoxHostEvent post-reboot failed (Get-ArcBoxHostFailureCode $_ 'checkpoint')
+    Write-ArcBoxHostEvent post-reboot failed (Get-ArcBoxHostFailureCode $_ 'checkpoint') -Failure $_
     throw
 } finally {
     $lock.Dispose()
     if ($transcribing) {
+        Write-ArcBoxJournal post-reboot INFO 'End of observed SYSTEM worker activity.' -WorkshopRecap
         try { Stop-Transcript | Out-Null }
         catch { Write-Warning 'The SYSTEM worker could not close its transcript; check the administrator journals.' -WarningAction Continue }
     }

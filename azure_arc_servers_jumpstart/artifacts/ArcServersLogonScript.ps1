@@ -46,21 +46,29 @@ Write-Host "Configuring DHCP Service"
 $dnsClient = Get-DnsClient | Where-Object { $_.InterfaceAlias -eq "Ethernet" }
 $dhcpScope = Get-DhcpServerv4Scope
 if ($dhcpScope.Name -ne "ArcBox") {
-    Add-DhcpServerv4Scope -Name "ArcBox" `
-        -StartRange 10.10.1.100 `
-        -EndRange 10.10.1.200 `
-        -SubnetMask 255.255.255.0 `
-        -LeaseDuration 1.00:00:00 `
-        -State Active
+    Invoke-ArcBoxOperation 'host-network' 'Create the DHCP scope' 'ArcBox' -DetailedOnly -Command {
+        Add-DhcpServerv4Scope -Name "ArcBox" `
+            -StartRange 10.10.1.100 `
+            -EndRange 10.10.1.200 `
+            -SubnetMask 255.255.255.0 `
+            -LeaseDuration 1.00:00:00 `
+            -State Active
+    }
+} else {
+    Write-ArcBoxJournal host-network INFO 'The ArcBox DHCP scope was already present.' -DetailedOnly
 }
 
 $dhcpOptions = Get-DhcpServerv4OptionValue
 if ($dhcpOptions.Count -lt 3) {
-    Set-DhcpServerv4OptionValue -ComputerName localhost `
-        -DnsDomain $dnsClient.ConnectionSpecificSuffix `
-        -DnsServer 168.63.129.16, 10.16.2.100 `
-        -Router 10.10.1.1 `
-        -Force
+    Invoke-ArcBoxOperation 'host-network' 'Set DHCP options' 'ArcBox' -DetailedOnly -Command {
+        Set-DhcpServerv4OptionValue -ComputerName localhost `
+            -DnsDomain $dnsClient.ConnectionSpecificSuffix `
+            -DnsServer 168.63.129.16, 10.16.2.100 `
+            -Router 10.10.1.1 `
+            -Force
+    }
+} else {
+    Write-ArcBoxJournal host-network INFO 'The DHCP options change was skipped by the existing option count check.' -DetailedOnly
 }
 
 # Create the NAT network
@@ -68,12 +76,19 @@ Write-Host "Creating Internal NAT"
 $natName = "InternalNat"
 $netNat = Get-NetNat
 if ($netNat.Name -ne $natName) {
-    New-NetNat -Name $natName -InternalIPInterfaceAddressPrefix 10.10.1.0/24
+    Invoke-ArcBoxOperation 'host-network' 'Create the lab NAT' $natName -DetailedOnly -Command {
+        New-NetNat -Name $natName -InternalIPInterfaceAddressPrefix 10.10.1.0/24
+    }
+} else {
+    Write-ArcBoxJournal host-network INFO 'The named lab NAT was already present.' -DetailedOnly
 }
 
 # Creating Hyper-V Manager desktop shortcut
 Write-Host "Creating Hyper-V Shortcut"
-Copy-Item -Path "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Administrative Tools\Hyper-V Manager.lnk" -Destination "C:\Users\All Users\Desktop" -Force
+Invoke-ArcBoxOperation 'host-network' 'Copy the shared Hyper-V shortcut' 'ArcBox-Client' -DetailedOnly -Command {
+    Copy-Item -Path "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Administrative Tools\Hyper-V Manager.lnk" -Destination "C:\Users\All Users\Desktop" -Force
+}
+Write-ArcBoxJournal host-network INFO 'DHCP and NAT setup returned on ArcBox-Client. Guest network readiness is checked separately.' -Milestone
 
 $cliDir = New-Item -Path (Join-Path $PSScriptRoot 'servers-cli') -ItemType Directory -Force -ErrorAction Stop
 $env:AZURE_CONFIG_DIR = $cliDir.FullName
@@ -88,17 +103,32 @@ Write-Header "Az CLI extensions"
 az config set extension.use_dynamic_install=yes_without_prompt --only-show-errors
 
 foreach ($extension in 'ssh', 'log-analytics-solution', 'connectedmachine', 'monitor-control-service') {
-    Invoke-ArcBoxAz @('extension','add','--name',$extension,'--yes','--only-show-errors')
+    Invoke-ArcBoxOperation packages 'Add Azure CLI extension' $extension {
+        Invoke-ArcBoxAz @('extension','add','--name',$extension,'--yes','--only-show-errors')
+        $version = $null
+        try {
+            $observed = @(Invoke-ArcBoxAz @('extension','show','--name',$extension,'--query','version','--output','tsv','--only-show-errors'))
+            if ($observed.Count -eq 1) { $version = Get-ArcBoxVersionToken $observed[0] }
+        } catch { Write-Verbose "Could not read the installed Azure CLI extension version for $extension." }
+        $evidence = if ($version) { "Installed version: $version." } else { 'Installed version not observed.' }
+        Write-ArcBoxJournal packages INFO "Azure CLI extension ${extension}: add command completed. $evidence" -DetailedOnly -Durable
+    }
 }
 
 # Required for CLI commands
 Write-Header "Az CLI Login"
-Invoke-ArcBoxAz @('login', '--identity', '--output', 'none')
-Invoke-ArcBoxAz @('account', 'set', '--subscription', $subscriptionId)
+Invoke-ArcBoxOperation identity 'Sign in with managed identity' 'Azure CLI' -DetailedOnly -Command {
+    Invoke-ArcBoxAz @('login', '--identity', '--output', 'none')
+}
+Invoke-ArcBoxOperation identity 'Select the deployment subscription' 'Azure CLI' -DetailedOnly -Command {
+    Invoke-ArcBoxAz @('account', 'set', '--subscription', $subscriptionId)
+}
 
 Write-Header "Az PowerShell Login"
-Disable-AzContextAutosave -Scope Process -ErrorAction Stop | Out-Null
-Connect-AzAccount -Identity -Tenant $tenantId -Subscription $subscriptionId -ErrorAction Stop | Out-Null
+Invoke-ArcBoxOperation identity 'Sign in with managed identity' 'Azure PowerShell' -DetailedOnly -Command {
+    Disable-AzContextAutosave -Scope Process -ErrorAction Stop | Out-Null
+    Connect-AzAccount -Identity -Tenant $tenantId -Subscription $subscriptionId -ErrorAction Stop | Out-Null
+}
 
 # Fail before staging guests if the scope already holds a different cohort's Arc resources.
 if (@(Get-AzConnectedMachine -ResourceGroupName $resourceGroup -SubscriptionId $subscriptionId -ErrorAction Stop).Count) {
@@ -158,11 +188,7 @@ $linuxImageSha256 = @{
     'VBD-ArcBox-Ubuntu-01.vhdx' = 'aeab00bd3879a63e82229f7601a9edc2216b3a7cefee032d547106927fe1a2d1'
     'VBD-ArcBox-Ubuntu-02.vhdx' = '15ed06dc85e58068ea14a460652bf9bd88cfbead0fed9815d2c5217d02cf475f'
 }
-foreach ($image in $images.GetEnumerator()) {
-    $verification = @{}
-    if ($linuxImageSha256.ContainsKey($image.Value)) { $verification.ExpectedSha256 = $linuxImageSha256[$image.Value] }
-    Receive-ArcBoxVhd -Path $image.Key -SourceUri ($vhdSourceFolder + $image.Value) -AzCopy $azcopy @verification
-}
+Receive-ArcBoxVhdBatch -Images $images -SourceFolder $vhdSourceFolder -AzCopy $azcopy -ImageHashes $linuxImageSha256
 Write-Header "Create Hyper-V VMs"
 $sshDir = Join-Path 'C:\ProgramData' ('ArcBoxLinux-' + (Split-Path -Leaf $PSScriptRoot))
 $null = New-Item -Path $sshDir -ItemType Directory
@@ -177,9 +203,16 @@ foreach ($asset in 'ArcBox.Linux.ps1','ArcBox.LinuxSeed.sh') {
     Receive-ArcBoxPinnedScript $artifactBase $asset (Join-Path $PSScriptRoot $asset)
 }
 $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-& $windowsPowerShell -NoLogo -NoProfile -NonInteractive -File (Join-Path $PSScriptRoot 'ArcBox.Linux.ps1') `
-    -VMRoot $Env:ArcBoxVMDir -SshDir $sshDir
-if ($LASTEXITCODE -ne 0) { throw 'Offline Linux disk preparation failed.' }
+Invoke-ArcBoxOperation servers 'Prepare offline Linux disks' 'Ubuntu and Proxy' -DetailedOnly -Command {
+    $PSNativeCommandUseErrorActionPreference = $false
+    & $windowsPowerShell -NoLogo -NoProfile -NonInteractive -File (Join-Path $PSScriptRoot 'ArcBox.Linux.ps1') `
+        -VMRoot $Env:ArcBoxVMDir -SshDir $sshDir
+    if ($LASTEXITCODE -ne 0) {
+        $failure = [InvalidOperationException]::new('Offline Linux disk preparation failed.')
+        $failure.Data['ArcBoxNativeExit'] = [int]$LASTEXITCODE
+        throw $failure
+    }
+}
 Initialize-ArcBoxGuests -Root $Env:ArcBoxVMDir
 foreach ($name in $linuxGuests) {
     Add-VMNetworkAdapterAcl -VMName $name -RemoteIPAddress '169.254.169.254/32' -Direction Outbound -Action Deny
@@ -194,8 +227,14 @@ if ((Invoke-WebRequest -Uri 'http://169.254.169.254/metadata/instance?api-versio
 }
 
 Write-Host "Starting VMs"
-Get-VM -Name @($Win2k25vmName, $Win2k22vmName, $Ubuntu01vmName, $Ubuntu02vmName, $SQLvmName, $ProxyvmName) |
-    Where-Object State -eq 'Off' | Start-VM
+foreach ($vm in (Get-VM -Name @($Win2k25vmName, $Win2k22vmName, $Ubuntu01vmName, $Ubuntu02vmName, $SQLvmName, $ProxyvmName))) {
+    if ($vm.State -eq 'Off') {
+        Invoke-ArcBoxOperation servers 'Request VM startup' $vm.Name -DetailedOnly -Command { $vm | Start-VM }
+    } else {
+        Write-ArcBoxJournal servers INFO "$($vm.Name): startup skipped; Hyper-V reported $($vm.State)." -DetailedOnly
+    }
+}
+Write-ArcBoxJournal servers INFO 'Nested VM configuration and startup dispatch are complete. Guest access is checked next.' -Milestone
 
 
 # Hard-coded username and password for the nested VMs
@@ -205,9 +244,15 @@ $nestedLinuxUsername = "jumpstart"
 Write-Header "Restarting Network Adapters"
 foreach ($name in $Win2k25vmName, $Win2k22vmName, $SQLvmName) {
     Write-ArcBoxJournal guest-access INFO "Opening PowerShell Direct to $name."
-    $vmSession = Wait-ArcBoxWindowsSession -Name $name -Credential $WindowsCredential
+    $vmSession = Invoke-ArcBoxOperation guest-access 'Open PowerShell Direct' $name -DetailedOnly -Command {
+        Wait-ArcBoxWindowsSession -Name $name -Credential $WindowsCredential
+    }
     Write-ArcBoxJournal guest-access INFO "PowerShell Direct authenticated to $name; adapter restart is separate."
-    try { Invoke-Command -Session $vmSession -ScriptBlock { Get-NetAdapter | Restart-NetAdapter -ErrorAction Stop } }
+    try {
+        Invoke-ArcBoxOperation guest-access 'Restart guest network adapters' $name -DetailedOnly -Command {
+            Invoke-Command -Session $vmSession -ScriptBlock { Get-NetAdapter | Restart-NetAdapter -ErrorAction Stop }
+        }
+    }
     finally { Remove-PSSession -Session $vmSession }
 }
 
@@ -230,33 +275,63 @@ try {
 }
 
 #Reserve IP address for proxy so it does not change
-Get-DhcpServerv4Lease -IPAddress $ProxyVmIp| Add-DhcpServerv4Reservation
+Invoke-ArcBoxOperation guest-access 'Reserve the proxy DHCP lease' $ProxyvmName -DetailedOnly -Command {
+    Get-DhcpServerv4Lease -IPAddress $ProxyVmIp | Add-DhcpServerv4Reservation
+}
 
 # Copy installation script to nested Windows VMs
 Write-Output "Transferring installation script to nested Windows VMs..."
-Copy-VMFile $Win2k25vmName -SourcePath "$agentScript\installArcAgent.ps1" -DestinationPath "$Env:ArcBoxDir\installArcAgent.ps1" -CreateFullPath -FileSource Host -Force
+Invoke-ArcBoxOperation servers 'Copy the Arc agent installer' $Win2k25vmName -DetailedOnly -Command {
+    Copy-VMFile $Win2k25vmName -SourcePath "$agentScript\installArcAgent.ps1" -DestinationPath "$Env:ArcBoxDir\installArcAgent.ps1" -CreateFullPath -FileSource Host -Force
+}
 
 # Copy Change tracking text file to 2025 and 2022 machines
-Copy-VMFile $Win2k25vmName -SourcePath "$Env:ArcBoxDir\ct.txt" -DestinationPath "$Env:ArcBoxDir\ct.txt" -CreateFullPath -FileSource Host -Force
-Copy-VMFile $Win2k22vmName -SourcePath "$Env:ArcBoxDir\ct.txt" -DestinationPath "$Env:ArcBoxDir\ct.txt" -CreateFullPath -FileSource Host -Force
+foreach ($name in $Win2k25vmName,$Win2k22vmName) {
+    Invoke-ArcBoxOperation servers 'Copy the change tracking file' $name -DetailedOnly -Command {
+        Copy-VMFile $name -SourcePath "$Env:ArcBoxDir\ct.txt" -DestinationPath "$Env:ArcBoxDir\ct.txt" -CreateFullPath -FileSource Host -Force
+    }
+}
 
 # Copy required SQL scripts to SQL VM
-Assert-ArcBoxPrivateScript $SqlHelperPath $SqlHelperSha256
-Copy-VMFile $SQLvmName -SourcePath $SqlHelperPath -DestinationPath "$Env:ArcBoxDir\testDefenderForSQL.ps1" -CreateFullPath -FileSource Host -Force
 $sqlModule = Join-Path $Env:ArcBoxDir 'SqlAdvancedThreatProtectionShell.psm1'
-$moduleHash = (Get-FileHash -LiteralPath $sqlModule -Algorithm SHA256).Hash
-Copy-VMFile $SQLvmName -SourcePath $sqlModule -DestinationPath $sqlModule -CreateFullPath -FileSource Host -Force
-Invoke-Command -VMName $SQLvmName -Credential $WindowsCredential -ErrorAction Stop -ArgumentList $SqlHelperSha256,$moduleHash -ScriptBlock {
-    param($ExpectedHash,$ExpectedModuleHash)
-    if ((Get-FileHash -LiteralPath 'C:\ArcBox\testDefenderForSQL.ps1' -Algorithm SHA256 -ErrorAction Stop).Hash -ine $ExpectedHash) {
-        throw 'SQL lab helper copy failed its digest check.'
-    }
-    if ((Get-FileHash -LiteralPath 'C:\ArcBox\SqlAdvancedThreatProtectionShell.psm1' -Algorithm SHA256 -ErrorAction Stop).Hash -ine $ExpectedModuleHash) {
-        throw 'SQL lab module copy failed its digest check.'
+Invoke-ArcBoxOperation servers 'Copy and verify SQL lab files' $SQLvmName -DetailedOnly -Command {
+    Assert-ArcBoxPrivateScript $SqlHelperPath $SqlHelperSha256
+    Copy-VMFile $SQLvmName -SourcePath $SqlHelperPath -DestinationPath "$Env:ArcBoxDir\testDefenderForSQL.ps1" -CreateFullPath -FileSource Host -Force
+    $moduleHash = (Get-FileHash -LiteralPath $sqlModule -Algorithm SHA256).Hash
+    Copy-VMFile $SQLvmName -SourcePath $sqlModule -DestinationPath $sqlModule -CreateFullPath -FileSource Host -Force
+    Invoke-Command -VMName $SQLvmName -Credential $WindowsCredential -ErrorAction Stop -ArgumentList $SqlHelperSha256,$moduleHash -ScriptBlock {
+        param($ExpectedHash,$ExpectedModuleHash)
+        if ((Get-FileHash -LiteralPath 'C:\ArcBox\testDefenderForSQL.ps1' -Algorithm SHA256 -ErrorAction Stop).Hash -ine $ExpectedHash) {
+            throw 'SQL lab helper copy failed its digest check.'
+        }
+        if ((Get-FileHash -LiteralPath 'C:\ArcBox\SqlAdvancedThreatProtectionShell.psm1' -Algorithm SHA256 -ErrorAction Stop).Hash -ine $ExpectedModuleHash) {
+            throw 'SQL lab module copy failed its digest check.'
+        }
     }
 }
 
 
+
+function Write-ArcBoxGuestPackageInventory {
+    param($Session, [ValidateSet('Proxy','Ubuntu-01','Ubuntu-02')][string]$Guest,
+        [ValidateSet('squid','net-tools')][string]$Package)
+    $probe = $null
+    try {
+        $probe = @(Invoke-Command -Session $Session -ArgumentList $Package -ErrorAction Stop -ScriptBlock {
+            param($Name)
+            $PSNativeCommandUseErrorActionPreference = $false
+            $result = & /usr/bin/timeout 5s /usr/bin/dpkg-query -W '-f=${Status}\t${Version}' $Name 2>$null
+            if ($LASTEXITCODE -eq 0) { $result }
+        })
+    } catch { Write-Verbose "Guest package inventory was unavailable for $Guest." }
+    if ($probe.Count -eq 1 -and $probe[0] -is [string] -and
+        $probe[0] -cmatch '\Ainstall ok installed\t(?<version>(?:[0-9]+:)?[0-9][0-9A-Za-z.+~:-]{0,79})\z') {
+        $message = "Package is installed according to dpkg. Installed version: $($Matches['version'])."
+    } else {
+        $message = 'Installed state and version not observed.'
+    }
+    Write-ArcBoxJournal packages INFO "${Guest}: $Package. $message" -DetailedOnly -Durable
+}
 
 #Installing Squid proxy on the Proxy VM
 Write-Output "Installing Squid proxy on the Proxy VM"
@@ -274,6 +349,7 @@ try {
         $null = sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install --yes squid 2>&1
         if ($LASTEXITCODE -ne 0) { throw "Squid package installation failed (exit $LASTEXITCODE)." }
     }
+    Write-ArcBoxGuestPackageInventory $ProxySessions Proxy squid
     Send-ArcBoxLinuxFile -Session $ProxySessions -Path "$Env:ArcBoxDir\whitelist.txt" -Destination '/etc/squid/whitelist.txt' -Mode '0644'
     Send-ArcBoxLinuxFile -Session $ProxySessions -Path "$Env:ArcBoxDir\squid.conf" -Destination '/var/lib/arcbox-provisioning/squid.conf' -Mode '0600'
     Invoke-Command -Session $ProxySessions -ErrorAction Stop -ScriptBlock {
@@ -292,6 +368,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Squid is not active.' }
     }
     Write-ArcBoxHostEvent proxy ok
+    Write-ArcBoxJournal proxy INFO 'Proxy: Squid accepted the lab baseline configuration and is active. The lab allowlist changes are a separate student step.' -Milestone -Durable
 } catch {
     Write-ArcBoxHostEvent proxy failed proxy-config
     throw
@@ -310,6 +387,7 @@ try {
 Write-ArcBoxJournal guest-access INFO 'Ubuntu-01 SSH opened. This confirms session access, not an Arc connection.'
 Invoke-JSSudoCommand -Session $Ubuntu1Session -Command "sudo apt-get update"
 Invoke-JSSudoCommand -Session $Ubuntu1Session -Command "sudo apt install net-tools -y"
+Write-ArcBoxGuestPackageInventory $Ubuntu1Session 'Ubuntu-01' net-tools
 # Invoke-JSSudoCommand -Session $Ubuntu1Session -Command "sudo apt install python3.10 -y"
 # Invoke-JSSudoCommand -Session $Ubuntu1Session -Command "sudo update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 110"
 # Invoke-JSSudoCommand -Session $Ubuntu1Session -Command "sudo update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 120"
@@ -320,12 +398,40 @@ Invoke-JSSudoCommand -Session $Ubuntu1Session -Command "sudo apt install net-too
 $Ubuntu2Session = New-PSSession -HostName $Ubuntu02VmIp -KeyFilePath $privateKey -UserName $nestedLinuxUsername -Options $ubuntu02Ssh
 Invoke-JSSudoCommand -Session $Ubuntu2Session -Command "sudo apt-get update"
 Invoke-JSSudoCommand -Session $Ubuntu2Session -Command "sudo apt install net-tools -y"
+Write-ArcBoxGuestPackageInventory $Ubuntu2Session 'Ubuntu-02' net-tools
 # Invoke-JSSudoCommand -Session $Ubuntu2Session -Command "sudo apt install python3.10 -y"
 # Invoke-JSSudoCommand -Session $Ubuntu2Session -Command "sudo update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 110"
 # Invoke-JSSudoCommand -Session $Ubuntu2Session -Command "sudo update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 120"
 # Automatically set Python 3.10 as the default
 # Invoke-JSSudoCommand -Session $Ubuntu2Session -Command "sudo update-alternatives --set python3 /usr/bin/python3.10"
 #Remove-PSSession -Session $Ubuntu2Session
+
+$shellPayload = Join-Path $PSScriptRoot 'ArcBox.LinuxShell.sh'
+$shellOperation = Start-ArcBoxOperation 'guest-access' 'Stage Ubuntu lab shell enhancement' 'ArcBox.LinuxShell.sh' -DetailedOnly
+$shellStaged = $false
+try {
+    Receive-ArcBoxPinnedScript $artifactBase 'ArcBox.LinuxShell.sh' $shellPayload
+    $shellStaged = $true
+} catch {
+    Complete-ArcBoxOperation 'guest-access' $shellOperation -Failure $_ -ContinueOnFailure
+}
+if ($shellStaged) {
+    Complete-ArcBoxOperation 'guest-access' $shellOperation -DetailedOnly
+    foreach ($ubuntu in @(@{Name=$Ubuntu01vmName; Session=$Ubuntu1Session}, @{Name=$Ubuntu02vmName; Session=$Ubuntu2Session})) {
+        $operation = Start-ArcBoxOperation 'guest-access' 'Configure the Ubuntu lab shell' $ubuntu.Name -DetailedOnly
+        try {
+            Send-ArcBoxLinuxFile -Session $ubuntu.Session -Path $shellPayload -Destination '/usr/local/bin/arc-status' -Mode '0755'
+            Invoke-Command -Session $ubuntu.Session -ErrorAction Stop -ScriptBlock {
+                $PSNativeCommandUseErrorActionPreference = $true
+                & /usr/local/bin/arc-status --install-profile
+            }
+        } catch {
+            Complete-ArcBoxOperation 'guest-access' $operation -Failure $_ -ContinueOnFailure
+            continue
+        }
+        Complete-ArcBoxOperation 'guest-access' $operation -DetailedOnly
+    }
+}
 
 Write-Header "Onboarding Arc-enabled servers"
 
@@ -337,10 +443,13 @@ $connectFilter = (Get-ArcBoxConnectOutputFilter).ToString()
 $agentStatus = Get-ArcBoxAgentStatusCommand
 Write-Output "Onboarding the nested Windows VMs as Azure Arc-enabled servers"
 
-$accessToken = ConvertFrom-SecureString ((Get-AzAccessToken -AsSecureString).Token) -AsPlainText
-try {
-    Invoke-ArcBoxGuestInstaller 'installArcAgent.ps1' 'Win2K25 Arc onboarding' -Transport 'PowerShell Direct' `
-        -ExpectedId "/subscriptions/$subscriptionId/resourceGroups/$resourceGroup/providers/Microsoft.HybridCompute/machines/$Win2k25vmName" `
+$arcAttempts = @{}
+$registrationLinks = @{}
+$arcAttempts[$Win2k25vmName] = Invoke-ArcBoxGuestRegistration $Win2k25vmName {
+    try {
+        $accessToken = ConvertFrom-SecureString ((Get-AzAccessToken -AsSecureString).Token) -AsPlainText
+        Invoke-ArcBoxGuestInstaller 'installArcAgent.ps1' 'Win2K25 Arc onboarding' -Transport 'PowerShell Direct' -NonBlocking -Guest $Win2k25vmName `
+        -Group $resourceGroup -Subscription $subscriptionId -RegistrationLinks $registrationLinks `
         -GuestLog 'Win2K25: %ProgramFiles%\ArcBoxGuestAgent\installationlog.txt (MSI); %ProgramData%\AzureConnectedMachineAgent\Log\azcmagent.log (connect).' -Action {
         Invoke-Command -VMName $Win2k25vmName -Credential $WindowsCredential -ErrorAction Stop -WarningAction SilentlyContinue -InformationAction SilentlyContinue -ScriptBlock {
             & (Join-Path $using:nestedVMArcBoxDir 'installArcAgent.ps1') -AccessToken $using:accessToken `
@@ -351,63 +460,78 @@ try {
         Receive-ArcBoxAgentStatusJob {
             Invoke-Command -VMName $Win2k25vmName -Credential $WindowsCredential -ScriptBlock $agentStatus -AsJob -ErrorAction Stop
         }
-    }
-} finally { $accessToken = $null }
+        }
+    } finally { $accessToken = $null }
+}
 
 Write-Output "Onboarding the nested Linux VMs as an Azure Arc-enabled servers"
-Send-ArcBoxLinuxFile -Session $Ubuntu1Session -Path "$agentScript\installArcAgentUbuntu.sh" `
+$ubuntuInstaller = Join-Path $PSScriptRoot 'installArcAgentUbuntu.sh'
+$ubuntuAptHelper = Join-Path $PSScriptRoot 'arcbox_apt.py'
+$ubuntuPins = Get-ArcBoxScriptPins -TemplateBaseUrl $artifactBase
+Assert-ArcBoxPrivateScript $ubuntuInstaller $ubuntuPins['installArcAgentUbuntu.sh'].Sha256
+Assert-ArcBoxPrivateScript $ubuntuAptHelper $ubuntuPins['arcbox_apt.py'].Sha256
+Send-ArcBoxLinuxFile -Session $Ubuntu1Session -Path $ubuntuAptHelper `
+    -Destination '/var/lib/arcbox-provisioning/arcbox_apt.py' -Mode '0600'
+Send-ArcBoxLinuxFile -Session $Ubuntu1Session -Path $ubuntuInstaller `
     -Destination '/var/lib/arcbox-provisioning/arcbox-install-agent.sh' -Mode '0600'
-$accessToken = ConvertFrom-SecureString ((Get-AzAccessToken -AsSecureString).Token) -AsPlainText
-try {
-    Invoke-ArcBoxGuestInstaller 'installArcAgentUbuntu.sh' 'Ubuntu-01 Arc onboarding' -Transport 'SSH remoting' `
-        -ExpectedId "/subscriptions/$subscriptionId/resourceGroups/$resourceGroup/providers/Microsoft.HybridCompute/machines/$Ubuntu01vmName" `
+$arcAttempts[$Ubuntu01vmName] = Invoke-ArcBoxGuestRegistration $Ubuntu01vmName {
+    try {
+        $accessToken = ConvertFrom-SecureString ((Get-AzAccessToken -AsSecureString).Token) -AsPlainText
+        Invoke-ArcBoxGuestInstaller 'installArcAgentUbuntu.sh' 'Ubuntu-01 Arc onboarding' -Transport 'SSH remoting' -NonBlocking -Guest $Ubuntu01vmName `
+        -Group $resourceGroup -Subscription $subscriptionId -RegistrationLinks $registrationLinks `
         -GuestLog 'Ubuntu-01: /var/log/arcbox-install-agent.log (stage and exit); /var/opt/azcmagent/log/azcmagent.log (connect).' -Action {
         Invoke-Command -Session $Ubuntu1Session -ErrorAction Stop -WarningAction SilentlyContinue -InformationAction SilentlyContinue `
-            -ScriptBlock (Get-ArcBoxUbuntuInstallerCommand) -ArgumentList $accessToken, $resourceGroup, $tenantId, $azureLocation, $subscriptionId, $connectFilter
+            -ScriptBlock (Get-ArcBoxUbuntuInstallerCommand) -ArgumentList $accessToken, $resourceGroup, $tenantId, $azureLocation, $subscriptionId, $connectFilter, $Ubuntu01vmName
     } -ReadStatus {
         Receive-ArcBoxAgentStatusJob {
             Invoke-Command -Session $Ubuntu1Session -ScriptBlock $agentStatus -AsJob -ErrorAction Stop
         }
-    }
-} finally {
-    $accessToken = $null
+        }
+    } finally { $accessToken = $null }
 }
 
 #WorkshopPlus: adding DCRs and extensins for 2025 and Ubuntu-1
 Write-Host "Assigning Data collection rules to Arc-enabled machines"
-try {
-    $baseline = Wait-ArcBoxBaselineRegistration -Group $resourceGroup -Subscription $subscriptionId -NotBefore $onboardingStarted
+$baseline = Wait-ArcBoxBaselineRegistration -Group $resourceGroup -Subscription $subscriptionId -NotBefore $onboardingStarted `
+    -Attempts $arcAttempts -RegistrationLinks $registrationLinks
+if ($baseline.Failures.Count -eq 0) {
     Write-ArcBoxHostEvent arc-connect ok
-} catch {
-    Write-ArcBoxHostEvent arc-connect failed arc-inventory
-    throw
+} else {
+    $connectedCount = $baseline.Connected.Count
+    Write-ArcBoxJournal arc-connect WARNING "Azure Arc: $connectedCount of 2 expected guests verified Connected. Provisioning continues; affected Arc exercises require recovery." `
+        -Milestone -Durable -Detail @{outcome='incomplete'; connected=$connectedCount; expected=2}
+    foreach ($guest in ($baseline.Failures.Keys | Sort-Object)) {
+        Write-ArcBoxArcFeaturesNotReached $guest $baseline.Failures[$guest]
+    }
 }
-$windowsArcMachine = $baseline.Keys | Where-Object { $baseline[$_] -eq $Win2k25vmName }
-$linuxArcMachine = $baseline.Keys | Where-Object { $baseline[$_] -eq $Ubuntu01vmName }
-Write-ArcBoxHostEvent arc-features start
+$windowsArcMachine = $baseline.Connected[$Win2k25vmName]
+$linuxArcMachine = $baseline.Connected[$Ubuntu01vmName]
+if ($baseline.Connected.Count) {
+    Write-ArcBoxHostEvent arc-features start
+    $previousErrorPreference = $ErrorActionPreference
 try {
     # This task runs under verified PowerShell 7; fail on a rejected native CLI request.
-    $previousErrorPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Stop'
     $PSNativeCommandUseErrorActionPreference = $true
-    az monitor data-collection rule association create --name "vmInsighitsWindows" --rule-id $vmInsightsDCR --resource $windowsArcMachine --only-show-errors
-    az monitor data-collection rule association create --name "vmInsighitsLinux" --rule-id $vmInsightsDCR --resource $linuxArcMachine --only-show-errors
-    az monitor data-collection rule association create --name "changeTrackingWindows" --rule-id $changeTrackingDCR --resource $windowsArcMachine --only-show-errors
-    az monitor data-collection rule association create --name "changeTrackingLinux" --rule-id $changeTrackingDCR --resource $linuxArcMachine --only-show-errors
-
-    Write-Host "Installing the AMA agent on the Arc-enabled machines"
-    az connectedmachine extension create --name AzureMonitorWindowsAgent --publisher Microsoft.Azure.Monitor --type AzureMonitorWindowsAgent --machine-name $Win2k25vmName --resource-group $resourceGroup --location $azureLocation --enable-auto-upgrade true --no-wait
-    az connectedmachine extension create --name AzureMonitorLinuxAgent --publisher Microsoft.Azure.Monitor --type AzureMonitorLinuxAgent --machine-name $Ubuntu01vmName --resource-group $resourceGroup --location $azureLocation --enable-auto-upgrade true --no-wait
-
-    Write-Host "Installing the Change Tracking agent on Windows"
-    az connectedmachine extension create --name ChangeTracking-Windows --publisher Microsoft.Azure.ChangeTrackingAndInventory --type-handler-version 2.42 --type ChangeTracking-Windows --machine-name $Win2k25vmName --resource-group $resourceGroup --location $azureLocation --enable-auto-upgrade --no-wait
-
-    Write-Host "Initializing the Azure Update Manager agents"
-    az connectedmachine assess-patches --resource-group $resourceGroup --name $Win2k25vmName --no-wait
-    az connectedmachine assess-patches --resource-group $resourceGroup --name $Ubuntu01vmName --no-wait
-    Write-Host "Installing the dependency agent on Windows"
-    $dependencyAgentSetting = '{\"enableAMA\":\"true\"}'
-    az connectedmachine extension create --name DependencyAgent --publisher Microsoft.Azure.Monitoring.DependencyAgent --type-handler-version 9.10 --type DependencyAgentWindows --machine-name $Win2k25vmName --settings $dependencyAgentSetting --resource-group $resourceGroup --location $azureLocation --enable-auto-upgrade --no-wait
+    if ($windowsArcMachine) {
+        az monitor data-collection rule association create --name "vmInsighitsWindows" --rule-id $vmInsightsDCR --resource $windowsArcMachine --only-show-errors
+        az monitor data-collection rule association create --name "changeTrackingWindows" --rule-id $changeTrackingDCR --resource $windowsArcMachine --only-show-errors
+        az connectedmachine extension create --name AzureMonitorWindowsAgent --publisher Microsoft.Azure.Monitor --type AzureMonitorWindowsAgent --machine-name $Win2k25vmName --resource-group $resourceGroup --location $azureLocation --enable-auto-upgrade true --no-wait
+        Write-ArcBoxJournal arc-features INFO 'Azure Monitor Agent requested on Win2K25. Installation and version were not yet verified.' -DetailedOnly -Durable
+        az connectedmachine extension create --name ChangeTracking-Windows --publisher Microsoft.Azure.ChangeTrackingAndInventory --type-handler-version 2.42 --type ChangeTracking-Windows --machine-name $Win2k25vmName --resource-group $resourceGroup --location $azureLocation --enable-auto-upgrade --no-wait
+        Write-ArcBoxJournal arc-features INFO 'Change Tracking on Win2K25: handler 2.42 requested. Installation and actual version were not yet verified.' -DetailedOnly -Durable
+        az connectedmachine assess-patches --resource-group $resourceGroup --name $Win2k25vmName --no-wait
+        $dependencyAgentSetting = '{\"enableAMA\":\"true\"}'
+        az connectedmachine extension create --name DependencyAgent --publisher Microsoft.Azure.Monitoring.DependencyAgent --type-handler-version 9.10 --type DependencyAgentWindows --machine-name $Win2k25vmName --settings $dependencyAgentSetting --resource-group $resourceGroup --location $azureLocation --enable-auto-upgrade --no-wait
+        Write-ArcBoxJournal arc-features INFO 'Dependency Agent on Win2K25: handler 9.10 requested. Installation and actual version were not yet verified.' -DetailedOnly -Durable
+    }
+    if ($linuxArcMachine) {
+        az monitor data-collection rule association create --name "vmInsighitsLinux" --rule-id $vmInsightsDCR --resource $linuxArcMachine --only-show-errors
+        az monitor data-collection rule association create --name "changeTrackingLinux" --rule-id $changeTrackingDCR --resource $linuxArcMachine --only-show-errors
+        az connectedmachine extension create --name AzureMonitorLinuxAgent --publisher Microsoft.Azure.Monitor --type AzureMonitorLinuxAgent --machine-name $Ubuntu01vmName --resource-group $resourceGroup --location $azureLocation --enable-auto-upgrade true --no-wait
+        Write-ArcBoxJournal arc-features INFO 'Azure Monitor Agent requested on Ubuntu-01. Installation and version were not yet verified.' -DetailedOnly -Durable
+        az connectedmachine assess-patches --resource-group $resourceGroup --name $Ubuntu01vmName --no-wait
+    }
 
     Write-ArcBoxHostEvent arc-features requested
 } catch {
@@ -416,6 +540,7 @@ try {
 } finally {
     $ErrorActionPreference = $previousErrorPreference
     $PSNativeCommandUseErrorActionPreference = $false
+}
 }
 
 #az connectedmachine extension create --name MDE.Windows --machine-name $machine.name $Win2k25vmName --resource-group $resourceGroup --publisher "Microsoft.Azure.Security" --type "MDE.Windows" --type-handler-version "1.0" --location $azureLocation --enable-auto-upgrade --no-wait
