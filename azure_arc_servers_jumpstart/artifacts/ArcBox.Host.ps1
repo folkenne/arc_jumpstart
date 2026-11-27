@@ -1,3 +1,121 @@
+$script:ArcBoxStepCatalog = @'
+{
+  "stages": {
+    "arm-submit": "Submit deployment",
+    "arm-observation": "Check deployment state",
+    "bootstrap-extension": "Run bootstrap extension",
+    "bootstrap": "Prepare ArcBox client",
+    "disk": "Prepare lab storage",
+    "os-volume": "Prepare system volume",
+    "powershell": "Prepare PowerShell",
+    "modules": "Load PowerShell modules",
+    "artifacts": "Stage lab artifacts",
+    "features": "Prepare Windows features",
+    "tasks": "Register startup tasks",
+    "reboot": "Restart ArcBox client",
+    "post-reboot": "Resume after reboot",
+    "dsc-common": "Install base software",
+    "dsc-itpro": "Configure Hyper-V",
+    "performance": "Sample host performance",
+    "host-network": "Configure host network",
+    "packages": "Install lab software",
+    "identity": "Authenticate to Azure",
+    "servers": "Configure guest VMs",
+    "Nested guest setup": "Configure guest VMs",
+    "guest-access": "Check guest access",
+    "arc-connect": "Connect to Arc",
+    "arc-features": "Configure Arc features",
+    "apt-lock-wait": "Wait for package locks",
+    "Win2K25 Arc onboarding": "Request Arc setup",
+    "Ubuntu-01 Arc onboarding": "Request Arc setup",
+    "Win2K25 Arc onboarding registration": "Connect to Arc",
+    "Ubuntu-01 Arc onboarding registration": "Connect to Arc",
+    "Win2K25 Arc onboarding connection": "Verify Arc connection",
+    "Ubuntu-01 Arc onboarding connection": "Verify Arc connection",
+    "workbook": "Deploy monitoring workbook",
+    "proxy": "Configure lab proxy",
+    "winget": "Check Windows Package Manager",
+    "vhd-images": "Prepare guest images",
+    "vhdx-transfer": "Download guest image",
+    "vhdx-prepare": "Prepare guest image",
+    "student-access": "Test student access",
+    "student-rdp": "Test RDP sign-in",
+    "student-windows": "Test Windows tools",
+    "student-ubuntu": "Test Ubuntu access",
+    "student-sql": "Run SSMS query"
+  },
+  "operations": {
+    "Download installer": "Download installer",
+    "Verify installer publisher": "Verify installer publisher",
+    "Install MSI": "Install MSI",
+    "Verify installed engine": "Verify PowerShell version",
+    "Download pinned module": "Download pinned module",
+    "Verify and stage module": "Stage verified module",
+    "Install verified module files": "Install verified module",
+    "Import locked module": "Import locked module",
+    "Download artifact": "Download artifact",
+    "Receive pinned script": "Stage pinned script",
+    "Install Windows feature": "Install Windows feature",
+    "Install Windows capability": "Install Windows capability",
+    "Register startup task": "Register startup task",
+    "Schedule client reboot": "Schedule client reboot",
+    "Create the DHCP scope": "Create DHCP scope",
+    "Create the lab NAT": "Create lab NAT",
+    "Sign in with managed identity": "Use managed identity",
+    "Prepare offline Linux disks": "Prepare Linux disks",
+    "Create guest VM": "Create guest VM",
+    "Request VM startup": "Start guest VM",
+    "Verify VM running": "Verify guest VM running",
+    "Open PowerShell Direct": "Open PowerShell Direct",
+    "Copy the Arc agent installer": "Copy Arc installer",
+    "Copy and verify SQL lab files": "Stage SQL lab files",
+    "Configure the Ubuntu lab shell": "Configure Ubuntu shell",
+    "Copy the shared Hyper-V shortcut": "Copy Hyper-V shortcut",
+    "Set DHCP options": "Set DHCP options",
+    "Download lab wallpaper": "Download lab wallpaper",
+    "Save protected worker inputs": "Save worker inputs",
+    "Stage worker helper": "Stage worker helper",
+    "Disable automatic logon": "Disable automatic logon",
+    "Remove obsolete automatic logon value": "Remove legacy autologon",
+    "Create guest storage directory": "Create guest storage",
+    "Guard and create partition with drive letter": "Create lab partition",
+    "Guard and format volume": "Format lab volume",
+    "Guard and initialize disk": "Initialize lab disk",
+    "Protect guest storage directory": "Protect guest storage",
+    "Create browser policy key": "Create browser policy key",
+    "Disable browser sidebar": "Disable browser sidebar",
+    "Enable Windows optional feature": "Enable optional feature",
+    "Hide browser first-run experience": "Hide browser welcome",
+    "Reserve the proxy DHCP lease": "Reserve proxy lease",
+    "Restart guest network adapters": "Restart guest networking",
+    "Select the deployment subscription": "Select Azure subscription",
+    "Import Windows module": "Import Windows module",
+    "Read locked module manifest": "Read module manifest",
+    "Resolve provisioning dependencies": "Resolve provisioning dependencies",
+    "Validate package closure": "Verify package dependencies",
+    "Verify command provider": "Verify command provider",
+    "Verify required installed module imports": "Verify module imports",
+    "Resize and verify OS partition": "Resize system partition",
+    "Add Azure CLI extension": "Add Azure CLI extension",
+    "Request task start": "Request task start",
+    "Install lab profile": "Install lab profile",
+    "Retain recovery installer": "Keep recovery installer",
+    "Save prepared boot checkpoint": "Save reboot checkpoint",
+    "Copy the change tracking file": "Copy change tracking file",
+    "Disable scheduled task": "Disable scheduled task",
+    "Enable task execution evidence": "Enable task history",
+    "Register student presentation task": "Register student task",
+    "Stage Ubuntu lab shell enhancement": "Stage Ubuntu shell",
+    "Load Windows PowerShell profile": "Load PowerShell profile",
+    "Record loaded module provenance": "Record module provenance"
+  },
+  "operationStageIds": {
+    "Transfer lab disk image": "vhdx-transfer",
+    "Download and verify lab disk images": "vhdx-prepare"
+  }
+}
+'@ | ConvertFrom-Json
+
 $script:ArcBoxHostReasons = @{
     'disk-contract' = 'Check the configured managed disk ID and its unique IMDS attachment and LUN.'
     'disk-discovery' = 'Check IMDS and the Windows storage presentation for the intended disk.'
@@ -128,6 +246,17 @@ function Write-ArcBoxJournal {
         $row = [ordered]@{v=1; id=$id; at=$at; sequence=$sequence; level=$Severity; script=$Owner; release=$j.release
             stage=$Stage; run=$j.run; attempt=$j.attempt; boot=$j.boot; elapsedMs=$ElapsedMs
             headline=$Headline; operation=$Operation; lastConfirmed=$LastConfirmed; detail=$Detail}
+        $labelProperty = $null
+        $stepId = $Stage
+        if ($Operation) {
+            $alias = $script:ArcBoxStepCatalog.operationStageIds.PSObject.Properties[$Operation]
+            if ($alias) { $stepId = $alias.Value }
+            $labelProperty = $script:ArcBoxStepCatalog.operations.PSObject.Properties[$Operation]
+            if ($labelProperty) { $stepId = $Operation }
+        }
+        if (-not $labelProperty) { $labelProperty = $script:ArcBoxStepCatalog.stages.PSObject.Properties[$stepId] }
+        $label = if ($labelProperty) { $labelProperty.Value }
+        if ($label) { $row.stepId = $stepId; $row.label = $label }
         if ($Failure) {
             $exception = $Failure.Exception
             $origin = $exception.Data['ArcBoxIncidentId']
@@ -152,7 +281,8 @@ function Write-ArcBoxJournal {
         }
         $nl = [Environment]::NewLine
         $t = if ($null -ne $ElapsedMs) { " | ${ElapsedMs} ms" } else { '' }
-        $text = "$(Format-ArcBoxJournalUtc $at) [$Severity] [$Stage] $Headline$t$nl"
+        $stepText = if ($label) { " [$label]" } else { '' }
+        $text = "$(Format-ArcBoxJournalUtc $at) [$Severity] [$Stage]$stepText $Headline$t$nl"
         $text += "  $Owner | Run $($j.run) | Attempt $($j.attempt) | Boot $(Format-ArcBoxJournalUtc $j.boot)$nl"
         $objective = @{
             bootstrap='Prepare ArcBox-Client'; disk='Prepare storage for lab VMs'; 'os-volume'='Prepare the system volume'
@@ -202,7 +332,7 @@ function Write-ArcBoxJournal {
         $advancedText = if ($StudentHeadline -and $Severity -eq 'INFO') { $StudentHeadline } else { $Headline }
         $records[$advancedName] = $advancedHeading +
             ("{0}  {1,-10} {2}{3}  [#{4} | event {5} | attempt {6}]{7}" -f
-                (Format-ArcBoxJournalUtc $at), $state, $advancedText, $t, $sequence, $id, $j.attempt, $nl)
+                (Format-ArcBoxJournalUtc $at), $state, ("$stepText $advancedText".TrimStart()), $t, $sequence, $id, $j.attempt, $nl)
         if ($LastConfirmed) { $records[$advancedName] += "  Last confirmed: $LastConfirmed$nl" }
         if ($LabImpact) { $records[$advancedName] += "  Lab impact: $LabImpact$nl" }
         if ($NextCheck) { $records[$advancedName] += "  Next check: $NextCheck$nl" }
@@ -228,7 +358,7 @@ function Write-ArcBoxJournal {
                     "Follow the main stages in order. All times are UTC. Event IDs link to the administrator logs.$nl$nl"
             }
             if ($heading -or $j.workshopTitle -cne $title) { $heading += "$title$nl" }
-            $records['WorkshopDeployment.log'] = $heading + "[$Severity] $workshopHeadline$nl" + $followup +
+            $records['WorkshopDeployment.log'] = $heading + "[$Severity]$stepText $workshopHeadline$nl" + $followup +
                 "  $(Format-ArcBoxJournalUtc $at) | Event $id | $logName | Sequence $sequence | Attempt $($j.attempt)$nl"
             if ($LocalPortalUrl) { $records['WorkshopDeployment.log'] += "  Azure portal: $LocalPortalUrl$nl" }
         }
@@ -610,11 +740,11 @@ function Get-ArcBoxAgentStatusCommand {
         $agent = if ($env:OS -eq 'Windows_NT') { Join-Path $env:ProgramW6432 'AzureConnectedMachineAgent\azcmagent.exe' }
             else { '/opt/azcmagent/bin/azcmagent' }
         $result = [pscustomobject]@{Tag='arcbox-agent-state-v1'; Status='Unverified'; LastHeartbeat=$null;
-            ExitCode=$null; Reason='agent unavailable'; ErrorCode=$null}
+            ExitCode=$null; Reason='agent unavailable'; ErrorCode=$null; ResourceId=$null; TenantId=$null}
         if (-not (Test-Path -LiteralPath $agent -PathType Leaf)) { return $result }
         $process = [Diagnostics.Process]::new()
         $process.StartInfo.FileName = $agent
-        $process.StartInfo.Arguments = 'show status lastHeartbeat --json'
+        $process.StartInfo.Arguments = 'show --json'
         $process.StartInfo.UseShellExecute = $false
         $process.StartInfo.RedirectStandardOutput = $true
         $process.StartInfo.RedirectStandardError = $true
@@ -641,6 +771,17 @@ function Get-ArcBoxAgentStatusCommand {
             $result.Reason = 'agent status response could not be parsed'
             $document = ConvertFrom-Json -InputObject $stdout.Result -ErrorAction Stop
             if ($document -is [pscustomobject]) {
+                $resourceShape = '\A/subscriptions/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/resourceGroups/[a-z0-9._()-]{1,90}/providers/Microsoft\.HybridCompute/machines/[a-z0-9._-]{1,54}\z'
+                if ($document.resourceId -is [string] -and $document.resourceId -match $resourceShape) {
+                    $result.ResourceId = $document.resourceId
+                } elseif ($null -eq $document.resourceId -and $document.subscriptionId -is [string] -and
+                    $document.resourceGroup -is [string] -and $document.resourceName -is [string]) {
+                    $id = "/subscriptions/$($document.subscriptionId)/resourceGroups/$($document.resourceGroup)/providers/Microsoft.HybridCompute/machines/$($document.resourceName)"
+                    if ($id -match $resourceShape) { $result.ResourceId = $id }
+                }
+                $tenant = [guid]::Empty
+                if ($document.tenantId -is [string] -and [guid]::TryParseExact($document.tenantId,'D',[ref]$tenant) -and
+                    $tenant -ne [guid]::Empty) { $result.TenantId = $tenant.ToString('D') }
                 foreach ($state in 'Connected','Disconnected','Expired','Not registered') {
                     if ($document.status -is [string] -and $document.status.Trim() -ieq $state) {
                         $result.Status = $state
@@ -673,19 +814,35 @@ function Receive-ArcBoxAgentStatusJob {
     } finally { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
 }
 
+function Get-ArcBoxResidentIdentityState {
+    param($Agent, [string]$ExpectedId, [string]$Tenant)
+    if ([string]::IsNullOrWhiteSpace($ExpectedId) -or [string]::IsNullOrWhiteSpace($Tenant) -or
+        [string]::IsNullOrWhiteSpace($Agent.ResourceId) -or [string]::IsNullOrWhiteSpace($Agent.TenantId)) {
+        return 'Unverified'
+    }
+    if ($Agent.ResourceId -ieq $ExpectedId -and $Agent.TenantId -ieq $Tenant) { return 'Matched' }
+    'Mismatch'
+}
+
 function Write-ArcBoxGuestConnection {
     param([string]$Name, [string]$Stage, [string]$Transport, [string]$GuestLog, [scriptblock]$Read,
-        [bool]$Registered, [string]$Guest)
+        [bool]$Registered, [string]$Guest, [string]$Group, [string]$Subscription, [string]$Tenant)
     $clock = [Diagnostics.Stopwatch]::StartNew()
     $attempts = if ($Registered) { 3 } else { 1 }
-    $detail = [ordered]@{command='azcmagent show status lastHeartbeat --json'; expected='Connected'; target=$Guest;
-        status='Unverified'; lastHeartbeat=$null; nativeExit=$null; errorCode=$null; reason=$null; transport=$Transport; guestLog=$GuestLog}
+    $detail = [ordered]@{command='azcmagent show --json'; expected='Connected'; target=$Guest;
+        status='Unverified'; lastHeartbeat=$null; nativeExit=$null; errorCode=$null; reason=$null; transport=$Transport; guestLog=$GuestLog;
+        residentIdentity='Unverified'}
+    $expectedId = if ($Group -and $Subscription -and $Guest) {
+        "/subscriptions/$Subscription/resourceGroups/$Group/providers/Microsoft.HybridCompute/machines/$Guest"
+    }
     for ($i = 1; $i -le $attempts; $i++) {
         $detail.reads = $i
         $detail.status = 'Unverified'
         $detail.nativeExit = $null
         $detail.errorCode = $null
         $detail.reason = $null
+        $detail.lastHeartbeat = $null
+        $detail.residentIdentity = 'Unverified'
         try { $rows = @(& $Read) }
         catch {
             $detail.reason = "$Transport status read failed or timed out"
@@ -701,6 +858,7 @@ function Write-ArcBoxGuestConnection {
         $row = $rows[0]
         $detail.status = $row.Status
         $detail.nativeExit = $row.ExitCode
+        if ($row.ExitCode -eq 0) { $detail.residentIdentity = Get-ArcBoxResidentIdentityState $row $expectedId $Tenant }
         if ($row.ErrorCode -cmatch '\AAZCM[0-9]{4}\z') { $detail.errorCode = $row.ErrorCode }
         if ($row.LastHeartbeat -is [string] -and $row.LastHeartbeat -cmatch '\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z\z') {
             $detail.lastHeartbeat = $row.LastHeartbeat
@@ -724,8 +882,13 @@ function Write-ArcBoxGuestConnection {
     }
     $when = if ($detail.lastHeartbeat) { " Last known heartbeat: $(Format-ArcBoxJournalUtc $detail.lastHeartbeat)." }
         else { ' No heartbeat timestamp was verified.' }
-    $level = if ($detail.status -eq 'Connected') {'INFO'} else {'WARNING'}
-    Write-ArcBoxJournal "$Stage connection" $level "${Stage}: $observation$when" -Owner $Name -Operation 'azcmagent show' -Milestone `
+    $identitySummary = switch ($detail.residentIdentity) {
+        'Matched' { ' The resident Azure resource identity matched.' }
+        'Mismatch' { ' The resident Azure resource identity did not match.' }
+        default { ' The resident Azure resource identity was not verified.' }
+    }
+    $level = if ($detail.status -eq 'Connected' -and $detail.residentIdentity -eq 'Matched') {'INFO'} else {'WARNING'}
+    Write-ArcBoxJournal "$Stage connection" $level "${Stage}: $observation$when$identitySummary" -Owner $Name -Operation 'azcmagent show' -Milestone `
         -LastConfirmed 'Read-only guest evidence; this does not override the registration result.' -Detail $detail -ElapsedMs $clock.ElapsedMilliseconds
 }
 
@@ -733,7 +896,7 @@ function Invoke-ArcBoxGuestInstaller {
     param([string]$Name, [string]$Stage, [scriptblock]$Action, [string]$Transport, [string]$GuestLog,
         [scriptblock]$ReadStatus, [switch]$NonBlocking,
         [ValidateSet('ArcBox-Win2K25','ArcBox-Ubuntu-01')][string]$Guest,
-        [string]$Group, [string]$Subscription, [hashtable]$RegistrationLinks)
+        [string]$Group, [string]$Subscription, [string]$Tenant, [hashtable]$RegistrationLinks)
     $watch = [Diagnostics.Stopwatch]::StartNew()
     $detail = [ordered]@{transport=$Transport; guestLog=$GuestLog; protocol='arcbox-installer-v1'; outcome='dispatch'; registration='Not observed'}
     if ($NonBlocking) { $detail.nonBlocking = $true }
@@ -870,7 +1033,7 @@ function Invoke-ArcBoxGuestInstaller {
                 else { 'Check the linked administrator event and guest evidence. Cause not confirmed here.' })
     }
     if ($ReadStatus) {
-        try { Write-ArcBoxGuestConnection $Name $Stage $Transport $GuestLog $ReadStatus ($detail.registration -eq 'Succeeded') $Guest }
+        try { Write-ArcBoxGuestConnection $Name $Stage $Transport $GuestLog $ReadStatus ($detail.registration -eq 'Succeeded') $Guest $Group $Subscription $Tenant }
         catch { Write-ArcBoxJournal "$Stage connection" WARNING 'Connection Unverified: the client could not record the guest status. Check the guest agent log.' -Owner $Name -Failure $_ }
     }
     if ($registrationError) { throw $registrationError }
@@ -1036,11 +1199,11 @@ function Get-ArcBoxScriptPins {
     [ordered]@{
         'ArcServersLogonScript.ps1' = @{
             Uri = "${TemplateBaseUrl}artifacts/ArcServersLogonScript.ps1"
-            Sha256 = '95c14e956775e17416b833e50fdb726d8a0e0e7ed77314268c95bc9cec506557'
+            Sha256 = 'ee5a486e210d111fae59f96a9e426128f9e37d7fcd1bca63e2e9d56ccb2937bc'
         }
         'installArcAgentUbuntu.sh' = @{
             Uri = "${TemplateBaseUrl}artifacts/installArcAgentUbuntu.sh"
-            Sha256 = 'c553ed4e1531eeee13823147fd7c2c5a5565d9f4969c47421e40f7c0de40374f'
+            Sha256 = '7c85ec52d554abecd685a664862b679a141d1178d090fb5787cdd4a6a7a98227'
         }
         'arcbox_apt.py' = @{
             Uri = "${TemplateBaseUrl}artifacts/arcbox_apt.py"
@@ -1789,15 +1952,33 @@ function Receive-ArcBoxVhd {
             $phase = 'transfer'
             $pending = "$Path.$([guid]::NewGuid().ToString('N')).pending.vhdx"
             $candidate = $pending
-            $nativeExit = & {
-                # Windows PowerShell treats redirected native stderr as a nonterminating error.
-                $ErrorActionPreference = 'Continue'
-                $previousExit = $global:LASTEXITCODE
-                try {
-                    $global:LASTEXITCODE = $null
-                    & $AzCopy copy $SourceUri $pending --overwrite=false --check-length=true --log-level=ERROR 2>&1 | Out-Null
-                    $global:LASTEXITCODE
-                } finally { $global:LASTEXITCODE = $previousExit }
+            $transfer = @{ image=$ImageName; operationId=[guid]::NewGuid().ToString('N')
+                parentOperationId=$detail.operationId; startedAt=[datetime]::UtcNow.ToString('o'); outcome='started' }
+            Write-ArcBoxJournal vhd-images INFO "${ImageName}: AzCopy transfer started." `
+                -Operation 'Transfer lab disk image' -Detail $transfer -DetailedOnly
+            $transfer.transferStartedAt = [datetime]::UtcNow.ToString('o')
+            $transferClock = [Diagnostics.Stopwatch]::StartNew()
+            $nativeExit = $null
+            try {
+                $nativeExit = & {
+                    # Windows PowerShell treats redirected native stderr as a nonterminating error.
+                    $ErrorActionPreference = 'Continue'
+                    $previousExit = $global:LASTEXITCODE
+                    try {
+                        $global:LASTEXITCODE = $null
+                        & $AzCopy copy $SourceUri $pending --overwrite=false --check-length=true --log-level=ERROR 2>&1 | Out-Null
+                        $global:LASTEXITCODE
+                    } finally { $global:LASTEXITCODE = $previousExit }
+                }
+            } finally {
+                $transferClock.Stop()
+                $transfer.endedAt = [datetime]::UtcNow.ToString('o')
+                $transfer.outcome = if ($null -ne $nativeExit -and $nativeExit -eq 0) { 'succeeded' } else { 'failed' }
+                $transfer.nativeExitCode = $nativeExit
+                $level = if ($transfer.outcome -eq 'succeeded') { 'INFO' } else { 'WARNING' }
+                Write-ArcBoxJournal vhd-images $level "${ImageName}: AzCopy transfer $($transfer.outcome)." `
+                    -Operation 'Transfer lab disk image' -Detail $transfer -ElapsedMs $transferClock.ElapsedMilliseconds `
+                    -DetailedOnly
             }
             if ($null -eq $nativeExit) { throw 'AzCopy did not return a process exit code.' }
             if ($nativeExit -ne 0) {

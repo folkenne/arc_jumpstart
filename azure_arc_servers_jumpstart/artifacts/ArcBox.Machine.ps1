@@ -367,8 +367,10 @@ function Initialize-ArcBoxGuests {
         $path = Join-Path $Root "VBD-$name.vhdx"
         $vm = Get-VM -Name $name -ErrorAction SilentlyContinue
         if (-not $vm) {
-            $vm = New-VM -Name $name -Path $Root -VHDPath $path -Generation 2 `
-                -MemoryStartupBytes $memory -SwitchName 'InternalNATSwitch'
+            $vm = Invoke-ArcBoxOperation servers 'Create guest VM' $name -Command {
+                New-VM -Name $name -Path $Root -VHDPath $path -Generation 2 `
+                    -MemoryStartupBytes $memory -SwitchName 'InternalNATSwitch' -ErrorAction Stop
+            }
             Set-VM -VM $vm -ProcessorCount $cpu -StaticMemory `
                 -AutomaticStartAction Start -AutomaticStopAction ShutDown
             Set-VMFirmware -VM $vm -EnableSecureBoot $(if ($secureBoot) { 'On' } else { 'Off' })

@@ -388,6 +388,17 @@ Write-ArcBoxHostEvent features ok
 $stage = 'tasks'
 $fallback = 'task-register'
 Write-ArcBoxHostEvent tasks start
+Invoke-ArcBoxOperation tasks 'Enable task execution evidence' 'TaskScheduler/Operational' {
+    $history = [System.Diagnostics.Eventing.Reader.EventLogConfiguration]::new('Microsoft-Windows-TaskScheduler/Operational')
+    try {
+        if (-not $history.IsEnabled) {
+            $history.IsEnabled = $true
+            $history.SaveChanges()
+        }
+    } finally {
+        $history.Dispose()
+    }
+}
 $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
 $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 4)
 $startupAction = New-ScheduledTaskAction -Execute $pwsh -Argument (Get-ArcBoxStartupArguments $work) -WorkingDirectory $work

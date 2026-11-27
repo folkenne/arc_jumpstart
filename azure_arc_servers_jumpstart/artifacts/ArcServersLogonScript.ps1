@@ -229,12 +229,23 @@ if ((Invoke-WebRequest -Uri 'http://169.254.169.254/metadata/instance?api-versio
 Write-Host "Starting VMs"
 foreach ($vm in (Get-VM -Name @($Win2k25vmName, $Win2k22vmName, $Ubuntu01vmName, $Ubuntu02vmName, $SQLvmName, $ProxyvmName))) {
     if ($vm.State -eq 'Off') {
-        Invoke-ArcBoxOperation servers 'Request VM startup' $vm.Name -DetailedOnly -Command { $vm | Start-VM }
+        Invoke-ArcBoxOperation servers 'Request VM startup' $vm.Name -DetailedOnly -Command { $vm | Start-VM -ErrorAction Stop }
     } else {
         Write-ArcBoxJournal servers INFO "$($vm.Name): startup skipped; Hyper-V reported $($vm.State)." -DetailedOnly
     }
 }
 Write-ArcBoxJournal servers INFO 'Nested VM configuration and startup dispatch are complete. Guest access is checked next.' -Milestone
+foreach ($name in @($Win2k25vmName, $Win2k22vmName, $Ubuntu01vmName, $Ubuntu02vmName, $SQLvmName, $ProxyvmName)) {
+    $check = Start-ArcBoxOperation servers 'Verify VM running' $name -DetailedOnly
+    try {
+        $state = (Get-VM -Name $name -ErrorAction Stop).State
+        if ($state -ne 'Running') { throw "Hyper-V reported $state for $name; Running was not observed." }
+    } catch {
+        Complete-ArcBoxOperation servers $check -Failure $_ -ContinueOnFailure -DetailedOnly
+        continue
+    }
+    Complete-ArcBoxOperation servers $check -DetailedOnly
+}
 
 
 # Hard-coded username and password for the nested VMs
@@ -449,7 +460,7 @@ $arcAttempts[$Win2k25vmName] = Invoke-ArcBoxGuestRegistration $Win2k25vmName {
     try {
         $accessToken = ConvertFrom-SecureString ((Get-AzAccessToken -AsSecureString).Token) -AsPlainText
         Invoke-ArcBoxGuestInstaller 'installArcAgent.ps1' 'Win2K25 Arc onboarding' -Transport 'PowerShell Direct' -NonBlocking -Guest $Win2k25vmName `
-        -Group $resourceGroup -Subscription $subscriptionId -RegistrationLinks $registrationLinks `
+        -Group $resourceGroup -Subscription $subscriptionId -Tenant $tenantId -RegistrationLinks $registrationLinks `
         -GuestLog 'Win2K25: %ProgramFiles%\ArcBoxGuestAgent\installationlog.txt (MSI); %ProgramData%\AzureConnectedMachineAgent\Log\azcmagent.log (connect).' -Action {
         Invoke-Command -VMName $Win2k25vmName -Credential $WindowsCredential -ErrorAction Stop -WarningAction SilentlyContinue -InformationAction SilentlyContinue -ScriptBlock {
             & (Join-Path $using:nestedVMArcBoxDir 'installArcAgent.ps1') -AccessToken $using:accessToken `
@@ -478,7 +489,7 @@ $arcAttempts[$Ubuntu01vmName] = Invoke-ArcBoxGuestRegistration $Ubuntu01vmName {
     try {
         $accessToken = ConvertFrom-SecureString ((Get-AzAccessToken -AsSecureString).Token) -AsPlainText
         Invoke-ArcBoxGuestInstaller 'installArcAgentUbuntu.sh' 'Ubuntu-01 Arc onboarding' -Transport 'SSH remoting' -NonBlocking -Guest $Ubuntu01vmName `
-        -Group $resourceGroup -Subscription $subscriptionId -RegistrationLinks $registrationLinks `
+        -Group $resourceGroup -Subscription $subscriptionId -Tenant $tenantId -RegistrationLinks $registrationLinks `
         -GuestLog 'Ubuntu-01: /var/log/arcbox-install-agent.log (stage and exit); /var/opt/azcmagent/log/azcmagent.log (connect).' -Action {
         Invoke-Command -Session $Ubuntu1Session -ErrorAction Stop -WarningAction SilentlyContinue -InformationAction SilentlyContinue `
             -ScriptBlock (Get-ArcBoxUbuntuInstallerCommand) -ArgumentList $accessToken, $resourceGroup, $tenantId, $azureLocation, $subscriptionId, $connectFilter, $Ubuntu01vmName
@@ -516,19 +527,19 @@ try {
     if ($windowsArcMachine) {
         az monitor data-collection rule association create --name "vmInsighitsWindows" --rule-id $vmInsightsDCR --resource $windowsArcMachine --only-show-errors
         az monitor data-collection rule association create --name "changeTrackingWindows" --rule-id $changeTrackingDCR --resource $windowsArcMachine --only-show-errors
-        az connectedmachine extension create --name AzureMonitorWindowsAgent --publisher Microsoft.Azure.Monitor --type AzureMonitorWindowsAgent --machine-name $Win2k25vmName --resource-group $resourceGroup --location $azureLocation --enable-auto-upgrade true --no-wait
+        az connectedmachine extension create --name AzureMonitorWindowsAgent --publisher Microsoft.Azure.Monitor --type AzureMonitorWindowsAgent --machine-name $Win2k25vmName --resource-group $resourceGroup --location $azureLocation --enable-auto-upgrade true --tags createdBy=copilot --no-wait
         Write-ArcBoxJournal arc-features INFO 'Azure Monitor Agent requested on Win2K25. Installation and version were not yet verified.' -DetailedOnly -Durable
-        az connectedmachine extension create --name ChangeTracking-Windows --publisher Microsoft.Azure.ChangeTrackingAndInventory --type-handler-version 2.42 --type ChangeTracking-Windows --machine-name $Win2k25vmName --resource-group $resourceGroup --location $azureLocation --enable-auto-upgrade --no-wait
+        az connectedmachine extension create --name ChangeTracking-Windows --publisher Microsoft.Azure.ChangeTrackingAndInventory --type-handler-version 2.42 --type ChangeTracking-Windows --machine-name $Win2k25vmName --resource-group $resourceGroup --location $azureLocation --enable-auto-upgrade --tags createdBy=copilot --no-wait
         Write-ArcBoxJournal arc-features INFO 'Change Tracking on Win2K25: handler 2.42 requested. Installation and actual version were not yet verified.' -DetailedOnly -Durable
         az connectedmachine assess-patches --resource-group $resourceGroup --name $Win2k25vmName --no-wait
         $dependencyAgentSetting = '{\"enableAMA\":\"true\"}'
-        az connectedmachine extension create --name DependencyAgent --publisher Microsoft.Azure.Monitoring.DependencyAgent --type-handler-version 9.10 --type DependencyAgentWindows --machine-name $Win2k25vmName --settings $dependencyAgentSetting --resource-group $resourceGroup --location $azureLocation --enable-auto-upgrade --no-wait
+        az connectedmachine extension create --name DependencyAgent --publisher Microsoft.Azure.Monitoring.DependencyAgent --type-handler-version 9.10 --type DependencyAgentWindows --machine-name $Win2k25vmName --settings $dependencyAgentSetting --resource-group $resourceGroup --location $azureLocation --enable-auto-upgrade --tags createdBy=copilot --no-wait
         Write-ArcBoxJournal arc-features INFO 'Dependency Agent on Win2K25: handler 9.10 requested. Installation and actual version were not yet verified.' -DetailedOnly -Durable
     }
     if ($linuxArcMachine) {
         az monitor data-collection rule association create --name "vmInsighitsLinux" --rule-id $vmInsightsDCR --resource $linuxArcMachine --only-show-errors
         az monitor data-collection rule association create --name "changeTrackingLinux" --rule-id $changeTrackingDCR --resource $linuxArcMachine --only-show-errors
-        az connectedmachine extension create --name AzureMonitorLinuxAgent --publisher Microsoft.Azure.Monitor --type AzureMonitorLinuxAgent --machine-name $Ubuntu01vmName --resource-group $resourceGroup --location $azureLocation --enable-auto-upgrade true --no-wait
+        az connectedmachine extension create --name AzureMonitorLinuxAgent --publisher Microsoft.Azure.Monitor --type AzureMonitorLinuxAgent --machine-name $Ubuntu01vmName --resource-group $resourceGroup --location $azureLocation --enable-auto-upgrade true --tags createdBy=copilot --no-wait
         Write-ArcBoxJournal arc-features INFO 'Azure Monitor Agent requested on Ubuntu-01. Installation and version were not yet verified.' -DetailedOnly -Durable
         az connectedmachine assess-patches --resource-group $resourceGroup --name $Ubuntu01vmName --no-wait
     }

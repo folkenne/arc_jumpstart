@@ -194,7 +194,7 @@ record 'Calling azcmagent connect; see /var/opt/azcmagent/log/azcmagent.log for 
 command -v azcmagent >/dev/null || exit 127
 code=0
 output=$(azcmagent connect --access-token "$access_token" --resource-group "$1" --tenant-id "$2" --location "$3" \
-    --subscription-id "$4" --resource-name "$resource_name" --cloud AzureCloud --tags 'Project=jumpstart_arcbox' \
+    --subscription-id "$4" --resource-name "$resource_name" --cloud AzureCloud --tags 'Project=jumpstart_arcbox,createdBy=copilot' \
     --correlation-id 'd009f5dd-dba8-4ac7-bac9-b54ef3a6671a' 2>&1) || code=$?
 unset access_token
 printf 'ArcBoxConnectExit:%d\n' "$code"

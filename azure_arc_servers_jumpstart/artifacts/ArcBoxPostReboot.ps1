@@ -21,7 +21,14 @@ try {
     $transcribing = $true
     $boot = Get-ArcBoxBootTime
     $artifactBase = [Environment]::GetEnvironmentVariable('templateBaseUrl', 'Machine')
-    Start-ArcBoxJournal -ScriptName 'ArcBoxPostReboot.ps1' -Boot $boot -Release (($artifactBase -split '/')[5])
+    $release = ($artifactBase -split '/')[5]
+    $worker = [ordered]@{
+        instance = [guid]::NewGuid().ToString('N')
+        processId = $PID
+        startedAt = [datetime]::UtcNow.ToString('o')
+        release = $release
+    }
+    Start-ArcBoxJournal -ScriptName 'ArcBoxPostReboot.ps1' -Boot $boot -Release $release
     Write-ArcBoxJournal post-reboot INFO 'SYSTEM startup worker entered. Checking the registered task and Hyper-V reboot.'
     Write-ArcBoxJournal artifacts INFO 'Loading the PowerShell 7 lab profile.' -Owner 'PSProfile.ps1'
     try { . (Join-Path $PSHOME 'Profile.ps1') }
@@ -53,6 +60,8 @@ try {
     Initialize-ArcBoxDataDrive -ExpectedId $inputFile.disk -VerifyOnly
     Assert-ArcBoxMachinePackages $inputFile.machinePackages
     Write-ArcBoxHostEvent post-reboot start
+    Write-ArcBoxJournal post-reboot INFO 'Reviewed SYSTEM worker instance started on this boot.' `
+        -Operation 'SYSTEM worker instance' -Detail $worker -DetailedOnly -Durable
     Invoke-ArcBoxCheckpoint $work dsc-common winget-setup {
         Invoke-ArcBoxLoggedScript 'ArcBox.Machine.ps1' 'Packages' {
             Install-ArcBoxMachinePackages -Packages $inputFile.machinePackages -Work $work
@@ -122,6 +131,7 @@ try {
         preparedOnBoot = $prepared
         boot = $boot
         completedAt = $finished
+        worker = $worker
     }
     [IO.File]::WriteAllText((Join-Path $work 'post-reboot.pending'), ($completion | ConvertTo-Json -Compress))
     [IO.File]::Move((Join-Path $work 'post-reboot.pending'), (Join-Path $work 'post-reboot.ok'))

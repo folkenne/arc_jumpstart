@@ -50,7 +50,7 @@ try {
             $ErrorActionPreference = 'Continue'
             $output = @(& $agent connect --access-token $AccessToken `
                 --resource-group $ResourceGroup --tenant-id $SpnTenantId --location $AzureLocation `
-                --subscription-id $SubscriptionId --cloud AzureCloud --tags 'Project=jumpstart_arcbox' `
+                --subscription-id $SubscriptionId --cloud AzureCloud --tags 'Project=jumpstart_arcbox,createdBy=copilot' `
                 --correlation-id 'd009f5dd-dba8-4ac7-bac9-b54ef3a6671a' 2>&1)
             $code = $global:LASTEXITCODE
         } finally {

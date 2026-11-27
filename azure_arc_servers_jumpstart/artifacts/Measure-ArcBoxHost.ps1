@@ -78,17 +78,96 @@ function Read-HostCounter($Key, $Spec, $OpenCounters) {
     }
 }
 
+function Get-ArcBoxNetworkRate($Previous, $Current) {
+    if (!$Previous -or !$Current -or $Previous.Adapter -cne $Current.Adapter -or
+        $Current.Seconds -le $Previous.Seconds -or $Current.Rx -lt $Previous.Rx -or $Current.Tx -lt $Previous.Tx) {
+        return
+    }
+    $seconds = $Current.Seconds - $Previous.Seconds
+    if ($seconds -gt 7.5) { return }
+    @{
+        netRxBytesPerSec = [Math]::Round(($Current.Rx - $Previous.Rx) / $seconds, 3)
+        netTxBytesPerSec = [Math]::Round(($Current.Tx - $Previous.Tx) / $seconds, 3)
+    }
+}
+
+function Get-ArcBoxDefaultRouteIndex {
+    $interfaces = @{}
+    foreach ($config in (Get-NetIPInterface -AddressFamily IPv4 -ConnectionState Connected -ErrorAction Stop)) {
+        $interfaces[[int]$config.InterfaceIndex] = [int]$config.InterfaceMetric
+    }
+    $paths = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -PolicyStore ActiveStore `
+        -ErrorAction Stop | Where-Object { $interfaces.ContainsKey([int]$_.InterfaceIndex) } | ForEach-Object {
+        @{ Index = [int]$_.InterfaceIndex; Metric = [int]$_.RouteMetric + $interfaces[[int]$_.InterfaceIndex] }
+    } | Sort-Object { $_.Metric })
+    if (!$paths.Count) { return }
+    $indices = @($paths | Where-Object { $_.Metric -eq $paths[0].Metric } | ForEach-Object { $_.Index } | Select-Object -Unique)
+    if ($indices.Count -eq 1) { $indices[0] }
+}
+
+function Find-ArcBoxDefaultRouteAdapter {
+    $index = Get-ArcBoxDefaultRouteIndex
+    if ($null -eq $index) { return }
+    foreach ($adapter in [Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
+        if ($adapter.OperationalStatus -ne 'Up' -or $adapter.NetworkInterfaceType -eq 'Loopback' -or
+            !$adapter.Supports([Net.NetworkInformation.NetworkInterfaceComponent]::IPv4)) { continue }
+        if ($adapter.GetIPProperties().GetIPv4Properties().Index -eq $index) { $adapter; return }
+    }
+}
+
 $output = "$PSScriptRoot\samples.jsonl"
 $openCounters = @{}
 $clock = [Diagnostics.Stopwatch]::StartNew()
 $samples = 0
+$netPrevious = $netAdapter = $null
+$networkRefreshAt = 0
+$netSeries = 0
+$networkNotice = $false
+$physicalRamBytes = $null
+try {
+    $capacity = (Get-CimInstance Win32_ComputerSystem -Property TotalPhysicalMemory -ErrorAction Stop).TotalPhysicalMemory
+    if ($capacity -gt 0) { $physicalRamBytes = [long]$capacity }
+} catch {
+    Write-ArcBoxJournal performance WARNING 'Host RAM capacity is unavailable; retain the memory measurements without a percentage.'
+}
 Write-ArcBoxJournal performance INFO 'Host sampler started on this boot; counters are kept in the protected samples file.'
 try {
     for ($tick = 0; [datetimeoffset]::UtcNow -lt $deadline; $tick++) {
         if ([IO.File]::Exists($output) -and [IO.FileInfo]::new($output).Length -ge 8MB) { break }
         if ($Attempt -cne [Environment]::GetEnvironmentVariable('ArcBoxAttemptId', 'Machine')) { break }
-        $row = [ordered]@{v=1; run=$run; attempt=$Attempt; boot=$boot; at=[datetime]::UtcNow.ToString('o')}
+        $row = [ordered]@{v=1; run=$run; attempt=$Attempt; release=$release; boot=$boot; at=[datetime]::UtcNow.ToString('o')}
         foreach ($key in $hostCounters.Keys) { $row[$key] = Read-HostCounter $key $hostCounters[$key] $openCounters }
+        $row.physicalRamBytes = $physicalRamBytes
+        $row.netRxBytesPerSec = $null
+        $row.netTxBytesPerSec = $null
+        $row.netSeries = $null
+        try {
+            if ($clock.Elapsed.TotalSeconds -ge $networkRefreshAt) {
+                $networkRefreshAt = $clock.Elapsed.TotalSeconds + 30
+                $netAdapter = Find-ArcBoxDefaultRouteAdapter
+            }
+            if ($netAdapter -and $netAdapter.OperationalStatus -eq 'Up') {
+                $stats = $netAdapter.GetIPStatistics()
+                $current = @{ Adapter=$netAdapter.Id; Seconds=$clock.Elapsed.TotalSeconds
+                    Rx=$stats.BytesReceived; Tx=$stats.BytesSent }
+                $rates = Get-ArcBoxNetworkRate $netPrevious $current
+                if (!$rates) { $netSeries++ }
+                else {
+                    $row.netRxBytesPerSec = $rates.netRxBytesPerSec
+                    $row.netTxBytesPerSec = $rates.netTxBytesPerSec
+                    $row.netSeries = $netSeries
+                }
+                $netPrevious = $current
+            } else {
+                $netPrevious = $null
+            }
+        } catch {
+            $netAdapter = $netPrevious = $null
+            if (!$networkNotice) {
+                Write-ArcBoxJournal performance WARNING 'Host uplink counters are temporarily unavailable; no network rate was recorded.'
+                $networkNotice = $true
+            }
+        }
         if ([IO.File]::Exists("$PSScriptRoot\disk-ready.txt")) {
             foreach ($key in $diskCounters.Keys) { $row[$key] = Read-HostCounter $key $diskCounters[$key] $openCounters }
             if ($row.fReadsPerSec -eq 0) { $row.fReadMs = $null }
